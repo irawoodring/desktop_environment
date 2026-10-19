@@ -1,0 +1,93 @@
+/* theme.css — the look of pane. Edit and save: the server reloads it instantly.
+ *
+ * Elements you can style:
+ *   desktop                       the background
+ *   window                        frame: border, radius, shadow, opacity
+ *     titlebar                    height, background, padding
+ *       title                     color, font-family, font-size, text-align
+ *       button.close / .maximize / .minimize    width, height, margin, background,
+ *                                 border-radius, color (icon), display, float
+ *   popup                         menus: box-shadow, border
+ *   cursor                        color (fill), border-color (outline), height (scale)
+ *
+ * States: window:focused :maximized :fullscreen :hover, button:hover :active
+ * Match apps: window[app-id="foot"], window[title*="Firefox"]
+ * Fonts are console (PSF) fonts by name, from /usr/share/consolefonts. */
+
+:root {
+  --accent: #7aa2f7;
+  --bar: #1f2335;
+  --bar-focused: #292e42;
+  --text: #c0caf5;
+  --text-dim: #565f89;
+}
+
+desktop {
+  background: linear-gradient(160deg, #24283b 0%, #1a1b26 55%, #16161e 100%);
+}
+
+window {
+  border: 1px solid #2f334d;
+  border-radius: 10px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+  font-family: "Lat2-Terminus16";
+  font-size: 16px;
+  color: var(--text-dim);
+}
+
+window:focused {
+  border-color: #3d59a1;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+window:maximized {
+  border-width: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+titlebar {
+  height: 30px;
+  background: var(--bar);
+  padding: 0 10px;
+}
+
+window:focused titlebar {
+  background: linear-gradient(to bottom, var(--bar-focused), var(--bar));
+}
+
+title {
+  text-align: center;
+  padding: 0 8px;
+}
+
+window:focused title {
+  color: var(--text);
+}
+
+/* macOS-style "traffic lights" on the left; icons appear on hover */
+button {
+  float: left;
+  width: 13px;
+  height: 13px;
+  margin: 0 4px;
+  border-radius: 50%;
+  background: #414868;
+  color: transparent;
+}
+
+window:focused button.close    { background: #f7768e; }
+window:focused button.minimize { background: #e0af68; }
+window:focused button.maximize { background: #9ece6a; }
+
+window:hover button { color: rgba(0, 0, 0, 0.55); }
+button:active       { color: rgba(0, 0, 0, 0.85); }
+
+popup {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+cursor {
+  color: white;
+  border-color: black;
+}
