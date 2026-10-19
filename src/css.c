@@ -1,4 +1,5 @@
-/* css.c — tokenizer, parser, selector matching and cascade.
+/* css.c — tokenizer, parser, selector matching and cascade (the built-in engine), plus
+ * the value parser and the libcss rewriter that both engines share.
  *
  * Pipeline, same shape as a browser's:
  *   text --tokenize--> tokens --parse--> rules (selectors + raw declarations)
@@ -162,10 +163,9 @@ struct rule {
 };
 
 struct sheet { struct rule *rules; int nrules; };
-static struct sheet active;
 
 /* raw declarations before var() resolution */
-struct raw_decl { char name[48]; int rule; int start, end; };   /* token range [start, end) */
+struct raw_decl { char name[48]; int rule; int start, end; bool important; };   /* tokens [start, end) */
 
 /* parse state */
 struct parser {
@@ -307,7 +307,7 @@ static bool match_compound(const struct compound *c, const struct css_elem *e) {
 }
 
 /* match right-to-left, walking up the tree for combinators */
-static bool match_from(const struct selector *s, int idx, const struct css_elem *e) {
+__attribute__((unused)) static bool match_from(const struct selector *s, int idx, const struct css_elem *e) {
     if (!match_compound(&s->parts[idx], e)) return false;
     if (idx == 0) return true;
     if (s->comb[idx] == '>') return e->parent && match_from(s, idx - 1, e->parent);
@@ -665,10 +665,12 @@ static void parse_block(struct parser *ps, int *pi, int rule_idx) {
             i++;
         }
         rd.end = i;
-        /* drop a trailing !important */
+        /* a trailing !important: the built-in engine ignores it, the libcss rewrite keeps it */
         for (int j = rd.start; j + 1 < rd.end; j++)
-            if (t[j].t == T_DELIM && t[j].s[0] == '!' && t[j + 1].t == T_IDENT && !strcmp(t[j + 1].s, "important"))
+            if (t[j].t == T_DELIM && t[j].s[0] == '!' && t[j + 1].t == T_IDENT && !strcmp(t[j + 1].s, "important")) {
                 rd.end = j;
+                rd.important = true;
+            }
         if (ps->nraw == ps->capraw) {
             ps->capraw = ps->capraw ? ps->capraw * 2 : 64;
             ps->raw = realloc(ps->raw, ps->capraw * sizeof *ps->raw);
@@ -707,6 +709,7 @@ static bool expand_vars(struct parser *ps, int start, int end, struct toks *out,
     return true;
 }
 
+
 static void free_sheet(struct sheet *s) {
     for (int i = 0; i < s->nrules; i++) {
         free(s->rules[i].sels);
@@ -717,12 +720,129 @@ static void free_sheet(struct sheet *s) {
     s->nrules = 0;
 }
 
-static int parse_sheet(const char *text, const char *file, struct sheet *out) {
+/* ------------------------------------------------------- rewriting for libcss */
+
+struct strbuf { char *s; size_t len, cap; };
+
+static void sb_put(struct strbuf *b, const char *s, size_t n) {
+    if (b->len + n + 1 > b->cap) {
+        b->cap = (b->len + n + 1) * 2;
+        b->s = realloc(b->s, b->cap);
+    }
+    memcpy(b->s + b->len, s, n);
+    b->len += n;
+    b->s[b->len] = '\0';
+}
+static void sb_puts(struct strbuf *b, const char *s) { sb_put(b, s, strlen(s)); }
+
+static void sb_quoted(struct strbuf *b, const char *s) {
+    sb_puts(b, "\"");
+    for (; *s; s++) {
+        if (*s == '"' || *s == '\\') sb_puts(b, "\\");
+        sb_put(b, s, 1);
+    }
+    sb_puts(b, "\"");
+}
+
+/* write a token back out as CSS text (comments and exact spacing are not preserved) */
+static void emit_tok(struct strbuf *b, const struct tok *t) {
+    char buf[96];
+    switch (t->t) {
+    case T_WS: sb_puts(b, " "); break;
+    case T_IDENT: sb_puts(b, t->s); break;
+    case T_FUNC: sb_puts(b, t->s); sb_puts(b, "("); break;
+    case T_HASH: sb_puts(b, "#"); sb_puts(b, t->s); break;
+    case T_STR: sb_quoted(b, t->s); break;
+    case T_NUM: snprintf(buf, sizeof buf, "%g%s", t->num, t->unit); sb_puts(b, buf); break;
+    case T_DELIM: sb_put(b, t->s, 1); break;
+    case T_COLON: sb_puts(b, ":"); break;
+    case T_SEMI: sb_puts(b, ";"); break;
+    case T_COMMA: sb_puts(b, ","); break;
+    case T_LBRACE: sb_puts(b, "{"); break;
+    case T_RBRACE: sb_puts(b, "}"); break;
+    case T_LPAREN: sb_puts(b, "("); break;
+    case T_RPAREN: sb_puts(b, ")"); break;
+    case T_LBRACK: sb_puts(b, "["); break;
+    case T_RBRACK: sb_puts(b, "]"); break;
+    case T_EOF: break;
+    }
+}
+
+static void emit_range(struct strbuf *b, const struct tok *t, int start, int end) {
+    for (int i = start; i < end; i++) emit_tok(b, &t[i]);
+}
+
+/* Selectors: our window states aren't standard pseudo-classes, so express them in terms
+ * libcss understands. :focused becomes :focus; :maximized and :fullscreen become an
+ * attribute the libcss engine reports, [pane-state~="maximized"]. */
+static void emit_selector(struct strbuf *b, const struct tok *t, int start, int end) {
+    for (int i = start; i < end; i++) {
+        if (t[i].t == T_COLON && i + 1 < end && t[i + 1].t == T_IDENT) {
+            const char *p = t[i + 1].s;
+            if (!strcmp(p, "focused")) { sb_puts(b, ":focus"); i++; continue; }
+            if (!strcmp(p, "maximized") || !strcmp(p, "fullscreen")) {
+                sb_puts(b, "[pane-state~=\"");
+                sb_puts(b, p);
+                sb_puts(b, "\"]");
+                i++;
+                continue;
+            }
+        }
+        emit_tok(b, &t[i]);
+    }
+}
+
+static bool has_gradient(const struct toks *v) {
+    for (int i = 0; i < v->n; i++)
+        if (v->v[i].t == T_FUNC && !strcmp(v->v[i].s, "linear-gradient")) return true;
+    return false;
+}
+
+/* One declaration, with var() already expanded. libcss drops properties it doesn't
+ * know, so the three it lacks travel inside properties pane doesn't otherwise use:
+ *   border-radius: R        ->  max-width: R
+ *   box-shadow: S           ->  content: "S"
+ *   background: <gradient>  ->  background: url("<gradient>")
+ * css_libcss.c reads them back out and hands the text to the built-in value parser. */
+static void emit_decl(struct strbuf *b, const char *name, const struct toks *v, bool important) {
+    struct strbuf val = { 0 };
+    emit_range(&val, v->v, 0, v->n);
+    const char *text = val.s ? val.s : "";
+    while (*text == ' ') text++;
+
+    if (!strcmp(name, "border-radius")) {
+        sb_puts(b, "max-width:");
+        sb_puts(b, text);
+    } else if (!strcmp(name, "box-shadow")) {
+        sb_puts(b, "content:");
+        sb_quoted(b, text);
+    } else if ((!strcmp(name, "background") || !strcmp(name, "background-image")) && has_gradient(v)) {
+        sb_puts(b, name);
+        sb_puts(b, ":url(");
+        sb_quoted(b, text);
+        sb_puts(b, ")");
+    } else {
+        sb_puts(b, name);
+        sb_puts(b, ":");
+        sb_puts(b, text);
+    }
+    if (important) sb_puts(b, " !important");
+    sb_puts(b, ";\n");
+    free(val.s);
+}
+
+/* ------------------------------------------------------------------- parsing */
+
+/* Parse a whole sheet. With `out`, build the built-in engine's rules (and report every
+ * problem). With `rewrite`, produce libcss-ready CSS instead, and only check the values
+ * libcss can't check for us. */
+static int parse_sheet(const char *text, const char *file, struct sheet *out, struct strbuf *rewrite) {
     struct toks ts = { 0 };
     tokenize(text, &ts);
     struct parser ps = { .ts = &ts, .file = file };
     struct tok *t = ts.v;
     struct sheet sh = { 0 };
+    int *pre_start = NULL, *pre_end = NULL;
     int i = 0;
 
     while (t[i].t != T_EOF) {
@@ -744,7 +864,7 @@ static int parse_sheet(const char *text, const char *file, struct sheet *out) {
 
         struct rule r = { 0 };
         int s = start;
-        for (int j = start; j <= end; j++) {   /* split the prelude on commas */
+        for (int j = start; j <= end && out; j++) {   /* split the prelude on commas */
             if (j == end || t[j].t == T_COMMA) {
                 struct selector sel;
                 if (parse_selector(&ps, t, s, j, &sel)) {
@@ -756,25 +876,120 @@ static int parse_sheet(const char *text, const char *file, struct sheet *out) {
         }
         sh.rules = realloc(sh.rules, (sh.nrules + 1) * sizeof *sh.rules);
         sh.rules[sh.nrules] = r;
+        pre_start = realloc(pre_start, (sh.nrules + 1) * sizeof *pre_start);
+        pre_end = realloc(pre_end, (sh.nrules + 1) * sizeof *pre_end);
+        pre_start[sh.nrules] = start;
+        pre_end[sh.nrules] = end;
         parse_block(&ps, &i, sh.nrules);
         sh.nrules++;
     }
 
-    for (int d = 0; d < ps.nraw; d++) {
-        struct raw_decl *rd = &ps.raw[d];
-        if (rd->name[0] == '-' && rd->name[1] == '-') continue;   /* custom property */
-        struct toks expanded = { 0 };
-        if (expand_vars(&ps, rd->start, rd->end, &expanded, 0)) {
-            struct vcur v = { expanded.v, 0, expanded.n };
-            parse_decl(&ps, rd->name, &v, &sh.rules[rd->rule], expanded.n ? expanded.v[0].line : 0);
+    int d = 0;
+    for (int r = 0; r < sh.nrules; r++) {
+        if (rewrite) {
+            emit_selector(rewrite, t, pre_start[r], pre_end[r]);
+            sb_puts(rewrite, " {\n");
         }
-        free(expanded.v);
+        for (; d < ps.nraw && ps.raw[d].rule == r; d++) {
+            struct raw_decl *rd = &ps.raw[d];
+            if (rd->name[0] == '-' && rd->name[1] == '-') continue;   /* custom property */
+            struct toks expanded = { 0 };
+            if (expand_vars(&ps, rd->start, rd->end, &expanded, 0)) {
+                struct vcur v = { expanded.v, 0, expanded.n };
+                int line = expanded.n ? expanded.v[0].line : 0;
+                if (out) {
+                    parse_decl(&ps, rd->name, &v, &sh.rules[r], line);
+                } else {
+                    bool ours = !strcmp(rd->name, "border-radius") || !strcmp(rd->name, "box-shadow") ||
+                                has_gradient(&expanded);
+                    struct rule scratch = { 0 };
+                    if (ours) parse_decl(&ps, rd->name, &v, &scratch, line);   /* just to report errors */
+                    free(scratch.decls);
+                }
+                if (rewrite) emit_decl(rewrite, rd->name, &expanded, rd->important);
+            }
+            free(expanded.v);
+        }
+        if (rewrite) sb_puts(rewrite, "}\n");
     }
+    free(pre_start);
+    free(pre_end);
     free(ps.raw);
     free(ts.v);
-    *out = sh;
+    if (out) *out = sh;
+    else free_sheet(&sh);
     return ps.errors;
 }
+
+char *css_rewrite_for_libcss(const char *text, const char *file) {
+    struct strbuf b = { 0 };
+    sb_puts(&b, "");
+    parse_sheet(text, file, NULL, &b);
+    return b.s;
+}
+
+/* -------------------------------------------------------------- computed style */
+
+void style_init(struct style *s, const struct style *parent) {
+    memset(s, 0, sizeof *s);
+    /* initial values; color, font and text-align inherit */
+    s->color = parent ? parent->color : (struct color){ 255, 255, 255, 255 };
+    snprintf(s->font_family, sizeof s->font_family, "%s", parent ? parent->font_family : "Lat2-Terminus16");
+    s->font_size = parent ? parent->font_size : 16;
+    s->text_align = parent ? parent->text_align : ALIGN_LEFT;
+    s->width = s->height = -1;
+    s->opacity = 1;
+}
+
+static void apply_decl(struct style *s, const struct decl *d) {
+    switch (d->prop) {
+    case P_BACKGROUND: s->background = d->v.paint; break;
+    case P_COLOR: s->color = d->v.color; break;
+    case P_BORDER_WIDTH: s->border_width = MAX(d->v.len, 0); break;
+    case P_BORDER_COLOR: s->border_color = d->v.color; break;
+    case P_BORDER_RADIUS: s->radius = fmaxf(d->v.radius.v, 0); s->radius_pct = d->v.radius.pct; break;
+    case P_PADDING: memcpy(s->padding, d->v.box, sizeof s->padding); break;
+    case P_MARGIN: memcpy(s->margin, d->v.box, sizeof s->margin); break;
+    case P_WIDTH: s->width = d->v.len; break;
+    case P_HEIGHT: s->height = d->v.len; break;
+    case P_BOX_SHADOW:
+        s->shadow = d->v.shadow.on;
+        s->shadow_x = d->v.shadow.x;
+        s->shadow_y = d->v.shadow.y;
+        s->shadow_blur = d->v.shadow.blur;
+        s->shadow_spread = d->v.shadow.spread;
+        s->shadow_color = d->v.shadow.c;
+        break;
+    case P_OPACITY: s->opacity = d->v.num; break;
+    case P_FONT_FAMILY: snprintf(s->font_family, sizeof s->font_family, "%s", d->v.str); break;
+    case P_FONT_SIZE: s->font_size = MAX(d->v.len, 1); break;
+    case P_TEXT_ALIGN: s->text_align = d->v.len; break;
+    case P_DISPLAY: s->hidden = d->v.len; break;
+    case P_FLOAT: s->float_left = d->v.len; break;
+    }
+}
+
+bool css_apply_property(struct style *s, const char *name, const char *value) {
+    struct toks ts = { 0 };
+    tokenize(value, &ts);
+    struct parser ps = { .ts = &ts, .file = "(theme)" };
+    struct vcur v = { ts.v, 0, ts.n - 1 };   /* without the EOF token */
+    struct rule r = { 0 };
+    bool ok = parse_decl(&ps, name, &v, &r, 0);
+    for (int i = 0; i < r.ndecls; i++) apply_decl(s, &r.decls[i]);
+    free(r.decls);
+    free(ts.v);
+    return ok;
+}
+
+float style_radius(const struct style *s, int w, int h) {
+    return s->radius_pct ? s->radius / 100.0f * MIN(w, h) : s->radius;
+}
+
+/* ---------------------------------------------------------- built-in engine */
+#ifndef PANE_LIBCSS
+
+static struct sheet active;
 
 int css_load_file(const char *path) {
     FILE *f = fopen(path, "rb");
@@ -787,7 +1002,7 @@ int css_load_file(const char *path) {
     text[n] = '\0';
     fclose(f);
     struct sheet sh;
-    int errors = parse_sheet(text, path, &sh);
+    int errors = parse_sheet(text, path, &sh, NULL);
     free(text);
     /* keep going with whatever parsed: like a browser, bad declarations are just skipped */
     free_sheet(&active);
@@ -798,12 +1013,10 @@ int css_load_file(const char *path) {
 
 void css_load_string(const char *text, const char *name) {
     struct sheet sh;
-    parse_sheet(text, name, &sh);
+    parse_sheet(text, name, &sh, NULL);
     free_sheet(&active);
     active = sh;
 }
-
-/* ------------------------------------------------------------------- cascade */
 
 struct match { int spec, order; const struct rule *r; };
 
@@ -813,16 +1026,8 @@ static int cmp_match(const void *a, const void *b) {
     return x->order - y->order;
 }
 
-void css_compute(const struct css_elem *e, const struct style *parent, struct style *s) {
-    memset(s, 0, sizeof *s);
-    /* initial values; color, font and text-align inherit */
-    s->color = parent ? parent->color : (struct color){ 255, 255, 255, 255 };
-    snprintf(s->font_family, sizeof s->font_family, "%s", parent ? parent->font_family : "Lat2-Terminus16");
-    s->font_size = parent ? parent->font_size : 16;
-    s->text_align = parent ? parent->text_align : ALIGN_LEFT;
-    s->width = s->height = -1;
-    s->opacity = 1;
-
+void css_compute(struct css_elem *e, const struct style *parent, struct style *s) {
+    style_init(s, parent);
     struct match m[64];
     int n = 0;
     for (int i = 0; i < active.nrules && n < 64; i++) {
@@ -834,39 +1039,12 @@ void css_compute(const struct css_elem *e, const struct style *parent, struct st
         if (best >= 0) m[n++] = (struct match){ best, i, r };
     }
     qsort(m, n, sizeof *m, cmp_match);
-
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < m[i].r->ndecls; j++) {
-            const struct decl *d = &m[i].r->decls[j];
-            switch (d->prop) {
-            case P_BACKGROUND: s->background = d->v.paint; break;
-            case P_COLOR: s->color = d->v.color; break;
-            case P_BORDER_WIDTH: s->border_width = MAX(d->v.len, 0); break;
-            case P_BORDER_COLOR: s->border_color = d->v.color; break;
-            case P_BORDER_RADIUS: s->radius = fmaxf(d->v.radius.v, 0); s->radius_pct = d->v.radius.pct; break;
-            case P_PADDING: memcpy(s->padding, d->v.box, sizeof s->padding); break;
-            case P_MARGIN: memcpy(s->margin, d->v.box, sizeof s->margin); break;
-            case P_WIDTH: s->width = d->v.len; break;
-            case P_HEIGHT: s->height = d->v.len; break;
-            case P_BOX_SHADOW:
-                s->shadow = d->v.shadow.on;
-                s->shadow_x = d->v.shadow.x;
-                s->shadow_y = d->v.shadow.y;
-                s->shadow_blur = d->v.shadow.blur;
-                s->shadow_spread = d->v.shadow.spread;
-                s->shadow_color = d->v.shadow.c;
-                break;
-            case P_OPACITY: s->opacity = d->v.num; break;
-            case P_FONT_FAMILY: snprintf(s->font_family, sizeof s->font_family, "%s", d->v.str); break;
-            case P_FONT_SIZE: s->font_size = MAX(d->v.len, 1); break;
-            case P_TEXT_ALIGN: s->text_align = d->v.len; break;
-            case P_DISPLAY: s->hidden = d->v.len; break;
-            case P_FLOAT: s->float_left = d->v.len; break;
-            }
-        }
-    }
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < m[i].r->ndecls; j++) apply_decl(s, &m[i].r->decls[j]);
 }
 
-float style_radius(const struct style *s, int w, int h) {
-    return s->radius_pct ? s->radius / 100.0f * MIN(w, h) : s->radius;
-}
+void css_elem_release(struct css_elem *e) { (void)e; }
+
+const char *css_engine_name(void) { return "built-in"; }
+
+#endif

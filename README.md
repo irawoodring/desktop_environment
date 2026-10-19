@@ -8,7 +8,7 @@ The same server with [a different stylesheet](docs/example-light-theme.css), rel
 
 ![a light theme](docs/light-theme.png)
 
-About 6,700 lines in total. Each file starts with a comment explaining the idea it implements.
+About 7,800 lines in total. Each file starts with a comment explaining the idea it implements.
 
 ## Building
 
@@ -20,10 +20,28 @@ Dependencies (all available in LFS/BLFS):
 | Linux API headers | `<drm/drm.h>`, `<linux/input.h>` | LFS chapter 5 |
 | zlib | reading `.psf.gz` console fonts, writing PNG screenshots | LFS |
 | libxkbcommon + xkeyboard-config | keyboard layouts; clients need the same keymap | BLFS |
+| libcss, libparserutils, libwapcaplet *(optional)* | the full CSS engine (see [Theming](#theming)) | NetSurf, below |
 
 ```sh
 make            # builds build/pane and build/pane-demo
 make install    # optional: /usr/local/bin, theme in /usr/local/share/pane
+```
+
+The build uses libcss if `pkg-config` can find it, and the built-in CSS engine otherwise. `make CSS=builtin` or `make CSS=libcss` forces one or the other, and `make` reports which one it used.
+
+### Building libcss
+
+libcss and its two helper libraries come from the NetSurf browser project, at <https://download.netsurf-browser.org/libs/releases/>. They build with NetSurf's own makefile framework, which you install first. pane was tested with these versions (they need perl, which LFS has):
+
+```sh
+tar xf buildsystem-1.10.tar.gz
+make -C buildsystem-1.10 PREFIX=/usr install
+
+for lib in libwapcaplet-0.4.3 libparserutils-0.2.5 libcss-0.9.2; do
+    tar xf $lib-src.tar.gz
+    make -C $lib PREFIX=/usr COMPONENT_TYPE=lib-shared
+    make -C $lib PREFIX=/usr COMPONENT_TYPE=lib-shared install
+done
 ```
 
 Kernel options:
@@ -39,7 +57,7 @@ Log in on a text console (VT) as root, or as a user in the `video` and `input` g
 ./build/pane -s ./build/pane-demo
 ```
 
-The demo client depends only on xkbcommon. Move the mouse over it, click, scroll, and type: it prints each key decoded through the keymap the server sent it.
+The demo client depends only on xkbcommon. Move the mouse over it, click, scroll, and type: it prints each key decoded through the keymap the server sent it. Drag out of it to drag some text (with a drag icon) into another app, and drop text onto it to receive it. A white square is added for each successful drop.
 
 | Keys | Action |
 |---|---|
@@ -49,6 +67,7 @@ The demo client depends only on xkbcommon. Move the mouse over it, click, scroll
 | Super+Up / Alt+F10 | maximize / restore |
 | Super+Enter / Ctrl+Alt+T | launch the terminal (`-t CMD`, default `foot`) |
 | Alt+drag, Alt+right-drag | move / resize from anywhere in a window |
+| Escape during a drag-and-drop | cancel the drag |
 | title bar: drag, double-click, middle-click | move, maximize, minimize |
 
 The server grabs the keyboard, so the console won't see your keys while it runs. If something goes wrong, SSH in and `kill` it; the console comes back. Crashes restore the console too. VT switching (Ctrl+Alt+F2) isn't implemented yet.
@@ -59,9 +78,9 @@ Apps reach the server through `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`. pane sets bot
 
 Toolkits link libwayland-*client*, the library on the app side of the socket, so you'll need that from BLFS to build them. The server itself uses none of it. Tested here, with no changes to any app:
 
-- **Qt 6 / KDE apps**: windows, server-side decorations, menus, tooltips, keyboard, clipboard
+- **Qt 6 / KDE apps**: windows, server-side decorations, menus, tooltips, keyboard, clipboard, dragging text out to other apps
 - **GTK 4**: draws its own (client-side) decorations; move, menus and popovers work
-- **foot** (terminal), **weston-simple-shm**, and wl-copy/wl-paste (clipboard)
+- **foot** (terminal; accepts dropped text), **weston-simple-shm**, and wl-copy/wl-paste (clipboard)
 
 Apps that render with the GPU need a fallback for now, because the server only accepts shared-memory buffers. Qt Widgets and most KDE apps work as they are. For QML apps set `QT_QUICK_BACKEND=software`; for GTK 4 set `GSK_RENDERER=cairo`.
 
@@ -78,7 +97,7 @@ Apps that render with the GPU need a fallback for now, because the server only a
 
 ## Theming
 
-The theme is a CSS file. Save it and the server reloads it immediately, with no restart. The server builds a small element tree for what it draws, and the CSS engine (`src/css.c`) matches selectors, applies specificity and inheritance, and computes styles, the same way a browser does:
+The theme is a CSS file. Save it and the server reloads it immediately, with no restart. The server builds a small element tree for what it draws, and a CSS engine matches selectors, applies specificity and inheritance, and computes styles, the same way a browser does:
 
 ```
 desktop
@@ -104,6 +123,17 @@ window:maximized { border-radius: 0; box-shadow: none; }
 
 See [theme.css](theme.css) (the default) and [docs/example-light-theme.css](docs/example-light-theme.css).
 
+### The two CSS engines
+
+The same theme file works with either engine; both render the default and example themes pixel-for-pixel identically.
+
+- **libcss** (`src/css_libcss.c`) is NetSurf's engine: real CSS 2.1 parsing and the full selector syntax, so you get things like `:not()` and `[attr|=v]`. For example, `window:not(:focused) titlebar { opacity: 0.6 }` works. (pane's tree has no siblings, so sibling selectors such as `+` and `~` never match.) It implements libcss's callback interface (`css_select_handler`) over pane's element tree, and libcss calls back with questions like "what's this node's parent?" or "is it hovered?".
+- **built-in** (`src/css.c`) has no dependencies and supports the selector subset listed above.
+
+libcss doesn't support `border-radius`, `box-shadow`, gradients or `var()`, which most themes want. Before the sheet reaches libcss, `css.c` therefore rewrites it, much like a CSS preprocessor would: `var()` references are substituted, and those three values travel inside standard properties pane doesn't otherwise use (`max-width`, `content` and `background-image: url(...)`). libcss does all the matching and cascading, and pane unpacks the three values afterwards. To see exactly what libcss receives, run with `PANE_CSS_DEBUG=1`.
+
+With libcss, a few things behave as in a browser rather than as in the built-in engine. A border needs a style to be drawn (`border: 1px solid red` rather than just `border-width: 1px`), and libcss reports its own syntax errors by silently dropping the bad declaration. pane still prints errors for the values it parses itself.
+
 ## Developing without a screen
 
 ```sh
@@ -121,7 +151,7 @@ screenshot out.png  quit
 
 Commands are processed as fast as they arrive, so put small pauses between a button press and the following motions when a client needs to react in between (for example GTK starting a window move).
 
-`PANE_DEBUG=1` prints every request and event on the wire (like `WAYLAND_DEBUG=1`).
+`PANE_DEBUG=1` prints every request and event on the wire (like `WAYLAND_DEBUG=1`). `PANE_CSS_DEBUG=1` prints the stylesheet as handed to libcss.
 
 ## How it works
 
@@ -131,9 +161,10 @@ Commands are processed as fast as they arrive, so put small pauses between a but
 | `src/core.c` | clients, the per-client object table, `wl_display`, `wl_registry`, `wl_output`, protocol errors |
 | `src/compositor.c` | `wl_surface` (double-buffered state, commit), `wl_region`, subsurfaces, `wl_shm` (shared-memory pixels; SIGBUS-safe copy) |
 | `src/xdg.c` | windows and popups (`xdg_wm_base`), the configure/ack handshake, popup positioning, `xdg-decoration` |
-| `src/seat.c` | pointer, keyboard (xkbcommon keymap shared via a sealed memfd), keybindings, clipboard |
+| `src/seat.c` | pointer, keyboard (xkbcommon keymap shared via a sealed memfd), keybindings, clipboard, drag and drop |
 | `src/wm.c` | window management: stacking, focus, hit-testing, move/resize/maximize, popup grabs, drawing |
-| `src/css.c` | the CSS tokenizer, parser, selector matcher and cascade |
+| `src/css.c` | the built-in CSS engine (tokenizer, parser, selector matcher, cascade), the value parser, and the rewrite for libcss |
+| `src/css_libcss.c` | the libcss engine: the selection callbacks over pane's element tree, and turning computed styles back into pane's |
 | `src/render.c`, `src/font.c` | software rasterizer (signed-distance rounded corners, gradients, shadows) and PSF fonts |
 | `src/backend_drm.c` | raw KMS ioctls: connectors, CRTCs, dumb buffers, page flips (no libdrm) |
 | `src/backend_fbdev.c`, `src/backend_headless.c` | the fallback and testing backends |
@@ -145,9 +176,9 @@ Commands are processed as fast as they arrive, so put small pauses between a but
 
 ## Status and next steps
 
-The protocol, window management and CSS were tested headless against Qt 6, GTK 4, foot, weston-simple-shm and wl-clipboard, with sanitizers (ASan/UBSan) enabled. **The DRM, fbdev and evdev code paths compile, but I haven't been able to run them on real hardware.** They follow the standard KMS sequence, but expect to debug on first boot. pane's startup output names the connector, mode and input devices it found, which is the place to start.
+The protocol, window management, both CSS engines and drag and drop were tested headless against Qt 6, GTK 4, foot, weston-simple-shm and wl-clipboard, with sanitizers (ASan/UBSan) enabled. The drag-and-drop tests covered demo to demo, demo to foot, Qt to demo, drops on the desktop, Escape, and the source client being killed mid-drag. **The DRM, fbdev and evdev code paths compile, but I haven't been able to run them on real hardware.** They follow the standard KMS sequence, but expect to debug on first boot. pane's startup output names the connector, mode and input devices it found, which is the place to start.
 
-Implemented: `wl_compositor` 5, `wl_subcompositor` 1, `wl_shm` 1, `wl_output` 4, `wl_seat` 7, `wl_data_device_manager` 3 (clipboard), `xdg_wm_base` 3, `zxdg_decoration_manager_v1` 1.
+Implemented: `wl_compositor` 5, `wl_subcompositor` 1, `wl_shm` 1, `wl_output` 4, `wl_seat` 7, `wl_data_device_manager` 3 (clipboard, drag and drop), `xdg_wm_base` 3, `zxdg_decoration_manager_v1` 1.
 
 Good next projects:
 - **VT switching**: `VT_SETMODE` with `VT_PROCESS`, dropping DRM master and input grabs on release
@@ -155,5 +186,5 @@ Good next projects:
 - **Damage tracking**: repaint only what changed
 - **`linux-dmabuf`** for GPU-rendered clients, which means Mesa, GBM and EGL
 - **Xwayland** for X11-only apps; it's just another Wayland client plus some window-manager glue
-- Drag and drop, the primary selection, `xdg-activation`, a panel or launcher written as a client
-- FreeType text in the CSS engine, and `libcss` if you want full CSS 2.1 selectors
+- The primary selection (middle-click paste), `xdg-activation`, a panel or launcher written as a client
+- FreeType text, so `font-family` can name real fonts

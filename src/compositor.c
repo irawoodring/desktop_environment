@@ -311,7 +311,7 @@ static void surface_apply(struct surface *s, struct surface_state *st) {
         int sc = s->scale > 0 ? s->scale : 1;
         s->width = s->buf_w / sc;
         s->height = s->buf_h / sc;
-        if (s->role == ROLE_CURSOR) {
+        if (s->role == ROLE_CURSOR || s->role == ROLE_DND_ICON) {   /* both drawn at pointer - hotspot */
             s->cursor_hot_x -= st->dx;
             s->cursor_hot_y -= st->dy;
         } else if (s->role == ROLE_XDG && s->xdg && s->xdg->toplevel) {
@@ -353,7 +353,7 @@ static void after_apply(struct surface *s) {
         }
     }
     if (s->role == ROLE_XDG && s->xdg) xdg_surface_commit(s->xdg);
-    if (s->role == ROLE_CURSOR) wm_cursor_changed();
+    if (s->role == ROLE_CURSOR || s->role == ROLE_DND_ICON) wm_cursor_changed();
     wm_damage();
 }
 

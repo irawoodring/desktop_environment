@@ -141,7 +141,7 @@ struct surface_state {
     int32_t scale;
 };
 
-enum surface_role { ROLE_NONE, ROLE_XDG, ROLE_SUBSURFACE, ROLE_CURSOR };
+enum surface_role { ROLE_NONE, ROLE_XDG, ROLE_SUBSURFACE, ROLE_CURSOR, ROLE_DND_ICON };
 
 struct snode { struct list link; struct surface *surface; };
 
@@ -273,6 +273,11 @@ void seat_surface_destroyed(struct surface *s);
 void seat_client_destroyed(struct client *c);
 struct surface *seat_pointer_focus(void);
 struct surface *seat_keyboard_focus_surface(void);
+bool seat_drag_active(void);
+struct surface *seat_drag_icon(void);
+void seat_drag_motion(struct surface *s, double sx, double sy);   /* s = surface under the pointer */
+void seat_drag_drop(void);
+void seat_drag_cancel(void);
 
 enum { MOD_SHIFT = 1, MOD_CTRL = 2, MOD_ALT = 4, MOD_SUPER = 8 };
 
@@ -296,6 +301,9 @@ void wm_popup_grab(struct popup *p);
 void wm_surface_destroyed(struct surface *s);
 void wm_cursor_changed(void);
 void wm_set_cursor(struct surface *s, int hot_x, int hot_y);
+bool wm_start_drag(struct client *c);   /* may client c start a drag now? if so, grab the pointer */
+void wm_drag_started(void);
+void wm_drag_ended(void);
 void wm_xdg_surface_destroyed(struct xdg_surface *x);
 struct rect wm_maximized_content(struct toplevel *t);
 void wm_popup_new(struct popup *p);

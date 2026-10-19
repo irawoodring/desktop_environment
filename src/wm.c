@@ -31,7 +31,7 @@ static bool client_cursor;      /* the client under the pointer chose a cursor *
 static struct toplevel *hover_win, *press_win;
 static enum part hover_part, press_part;
 
-static enum { G_NONE, G_MOVE, G_RESIZE, G_IMPLICIT } grab;
+static enum { G_NONE, G_MOVE, G_RESIZE, G_IMPLICIT, G_DRAG } grab;
 static struct toplevel *grab_win;
 static double grab_px, grab_py;
 static int grab_x, grab_y, grab_w, grab_h;
@@ -85,10 +85,13 @@ static unsigned window_states(struct toplevel *t) {
 static const char *const button_class[3] = { "close", "maximize", "minimize" };
 static const enum part button_part[3] = { PART_CLOSE, PART_MAXIMIZE, PART_MINIMIZE };
 
+/* Build the window's element tree (window > titlebar > title, buttons), style it, and
+ * release it again: like a browser restyling a tiny DOM. */
 static void compute_styles(struct toplevel *t, unsigned states, struct layout *L) {
-    struct css_elem ew = { "window", NULL, states, t->app_id, t->title, NULL };
-    struct css_elem eb = { "titlebar", NULL, 0, t->app_id, t->title, &ew };
-    struct css_elem et = { "title", NULL, 0, t->app_id, t->title, &eb };
+    struct css_elem ew = { .name = "window", .states = states, .app_id = t->app_id, .title = t->title };
+    struct css_elem eb = { .name = "titlebar", .app_id = t->app_id, .title = t->title, .parent = &ew };
+    struct css_elem et = { .name = "title", .app_id = t->app_id, .title = t->title, .parent = &eb };
+    struct css_elem btn[3];
     css_compute(&ew, NULL, &L->win);
     css_compute(&eb, &L->win, &L->bar);
     css_compute(&et, &L->bar, &L->title);
@@ -96,9 +99,21 @@ static void compute_styles(struct toplevel *t, unsigned states, struct layout *L
         unsigned bs = 0;
         if (hover_win == t && hover_part == button_part[i]) bs |= ST_HOVER;
         if (press_win == t && press_part == button_part[i] && hover_part == press_part) bs |= ST_ACTIVE;
-        struct css_elem e = { "button", button_class[i], bs, t->app_id, t->title, &eb };
-        css_compute(&e, &L->bar, &L->btn[i]);
+        btn[i] = (struct css_elem){ .name = "button", .cls = button_class[i], .states = bs,
+                                    .app_id = t->app_id, .title = t->title, .parent = &eb };
+        css_compute(&btn[i], &L->bar, &L->btn[i]);
     }
+    for (int i = 0; i < 3; i++) css_elem_release(&btn[i]);
+    css_elem_release(&et);
+    css_elem_release(&eb);
+    css_elem_release(&ew);
+}
+
+/* style of a top-level element with no children: desktop, popup, cursor */
+static void style_of(const char *name, struct style *out) {
+    struct css_elem e = { .name = name };
+    css_compute(&e, NULL, out);
+    css_elem_release(&e);
 }
 
 static int bar_height(const struct layout *L) { return L->bar.height >= 0 ? L->bar.height : 28; }
@@ -574,9 +589,39 @@ void wm_set_cursor(struct surface *s, int hot_x, int hot_y) {
 
 void wm_cursor_changed(void) { wm_damage(); }
 
+/* ------------------------------------------------------------- drag & drop */
+
+/* A client may start a drag only from a press it is still holding. */
+bool wm_start_drag(struct client *c) {
+    return grab == G_IMPLICIT && implicit_surface && implicit_surface->client == c && buttons_down > 0;
+}
+
+static void process_motion(void);
+
+void wm_drag_started(void) {
+    grab = G_DRAG;          /* pointer events now drive the drag, not wl_pointer */
+    implicit_surface = NULL;
+    seat_pointer_leave();
+    client_cursor = false;
+    process_motion();
+    wm_damage();
+}
+
+void wm_drag_ended(void) {
+    if (grab != G_DRAG) return;
+    grab = G_NONE;
+    process_motion();       /* give the pointer back to whatever is under it */
+    wm_damage();
+}
+
 /* --------------------------------------------------------------------- input */
 
 static void process_motion(void) {
+    if (grab == G_DRAG) {
+        struct hit h = hit_test(ptr_x, ptr_y);
+        seat_drag_motion(h.s, h.sx, h.sy);
+        return;
+    }
     if (grab == G_MOVE && grab_win) {
         if (unmaximize_on_drag) {
             drag_unmaximize(grab_win);
@@ -649,6 +694,10 @@ void wm_pointer_button(uint32_t button, bool pressed) {
     if (pressed) buttons_down++;
     else if (buttons_down > 0) buttons_down--;
 
+    if (grab == G_DRAG) {
+        if (!pressed && buttons_down == 0) seat_drag_drop();
+        return;
+    }
     if (grab == G_MOVE || grab == G_RESIZE) {
         if (!pressed && buttons_down == 0) {
             end_grab();
@@ -730,11 +779,17 @@ void wm_pointer_button(uint32_t button, bool pressed) {
 }
 
 void wm_pointer_axis(int axis, double value, int discrete) {
-    if (grab == G_MOVE || grab == G_RESIZE) return;
+    if (grab == G_MOVE || grab == G_RESIZE || grab == G_DRAG) return;
     seat_pointer_axis(axis, value, discrete);
 }
 
-void wm_key(uint32_t key, bool pressed) { seat_keyboard_key(key, pressed); }
+void wm_key(uint32_t key, bool pressed) {
+    if (grab == G_DRAG && key == KEY_ESC) {   /* Escape cancels a drag */
+        if (pressed) seat_drag_cancel();
+        return;
+    }
+    seat_keyboard_key(key, pressed);
+}
 
 /* ------------------------------------------------------------------- actions */
 
@@ -830,9 +885,8 @@ static void draw_window(struct canvas *c, struct toplevel *t) {
 static void draw_popup(struct canvas *c, struct popup *p) {
     int sx, sy, ox = 0, oy = 0;
     if (!p->xdg || !surface_origin(p->xdg, &sx, &sy) || !xdg_abs_origin(p->xdg, &ox, &oy)) return;
-    struct css_elem e = { "popup", NULL, 0, NULL, NULL, NULL };
     struct style st;
-    css_compute(&e, NULL, &st);
+    style_of("popup", &st);
     struct rect g = xdg_geometry(p->xdg);
     struct rect r = { ox, oy, g.w, g.h };
     float rad = style_radius(&st, r.w, r.h);
@@ -858,9 +912,8 @@ static void draw_desktop(struct canvas *c) {
         desktop_h = c->h;
         desktop_cache = calloc((size_t)c->w * c->h, 4);
         struct canvas dc = { desktop_cache, c->w, c->h, c->w, { 0, 0, c->w, c->h } };
-        struct css_elem e = { "desktop", NULL, 0, NULL, NULL, NULL };
         struct style st;
-        css_compute(&e, NULL, &st);
+        style_of("desktop", &st);
         if (st.background.kind == PAINT_NONE) {
             st.background.kind = PAINT_COLOR;
             st.background.color = (struct color){ 0x30, 0x30, 0x38, 255 };
@@ -873,6 +926,11 @@ static void draw_desktop(struct canvas *c) {
 
 static void draw_pointer(struct canvas *c) {
     int x = (int)ptr_x, y = (int)ptr_y;
+    struct surface *icon = seat_drag_icon();
+    if (grab == G_DRAG && icon && icon->pixels) {   /* what's being dragged follows the pointer */
+        struct draw_ctx d = { c, 1, NULL, uniform(0) };
+        surface_for_each(icon, x - icon->cursor_hot_x, y - icon->cursor_hot_y, draw_surface, &d);
+    }
     if (client_cursor && seat_pointer_focus()) {
         if (cursor_surface && cursor_surface->pixels) {
             struct draw_ctx d = { c, 1, NULL, uniform(0) };
@@ -881,9 +939,8 @@ static void draw_pointer(struct canvas *c) {
         }
         return;   /* NULL cursor surface = the client hid the pointer */
     }
-    struct css_elem e = { "cursor", NULL, 0, NULL, NULL, NULL };
     struct style st;
-    css_compute(&e, NULL, &st);
+    style_of("cursor", &st);
     struct color outline = st.border_color.a ? st.border_color : (struct color){ 0, 0, 0, 255 };
     int scale = st.height > 0 ? MAX(1, (int)lroundf(st.height / 19.0f)) : 1;
     draw_cursor(c, x, y, scale, st.color, outline);
