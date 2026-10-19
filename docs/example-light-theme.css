@@ -1,0 +1,17 @@
+/* a light, Windows-ish theme to exercise the engine */
+:root { --accent: #0063b1; }
+desktop { background: linear-gradient(to bottom right, #6a85b6, #bac8e0); }
+window { border: 2px solid #9aa; border-radius: 4px; box-shadow: 0 2px 10px rgba(0,0,0,.35);
+         color: #555; font-family: "Lat2-TerminusBold16"; }
+window:focused { border-color: var(--accent); }
+titlebar { height: 32px; background: #f0f0f0; padding: 0 2px; }
+window:focused titlebar { background: var(--accent); }
+window:focused title { color: white; }
+title { text-align: left; padding: 0 10px; }
+button { width: 40px; height: 30px; border-radius: 0; background: transparent; color: #444; }
+window:focused button { color: white; }
+button:hover { background: rgba(255,255,255,.25); }
+button.close:hover { background: #e81123; color: white; }
+window[app-id="foot"] titlebar { background: #2d7d46; }
+window[app-id^="pane"] button.minimize { display: none; }
+cursor { color: #ffd700; border-color: #333; height: 38px; }
