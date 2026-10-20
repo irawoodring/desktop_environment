@@ -112,14 +112,11 @@ static void compute(struct style *ms, struct style *is) {
     css_elem_release(&em);
 }
 
-static int text_scale(const struct font *f, const struct style *s) {
-    return f ? MAX(1, (int)lroundf((float)s->font_size / f->height)) : 1;
+static const struct font *font_of(const struct style *s) {
+    return font_get(s->font_family, s->font_weight, s->font_italic, s->font_size);
 }
 
-static int text_height(const struct style *s) {
-    const struct font *f = font_get(s->font_family);
-    return f ? f->height * text_scale(f, s) : 16;
-}
+static int text_height(const struct style *s) { return font_line_height(font_of(s)); }
 
 /* place the items; the check column is as wide as the text is tall */
 static void layout(struct style *ms, struct style *is) {
@@ -129,16 +126,16 @@ static void layout(struct style *ms, struct style *is) {
         if (m.items[i].kind == ITEM_SEPARATOR) {
             heights[i] = (s->height >= 0 ? s->height : 1) + s->margin[0] + s->margin[2];
         } else {
-            const struct font *f = font_get(s->font_family);
             int th = text_height(s);
             heights[i] = s->height >= 0 ? s->height : th + 8;
-            int w = text_width(f, text_scale(f, s), m.items[i].label) + th + 6 + s->padding[1] + s->padding[3];
+            int w = text_width(font_of(s), m.items[i].label) + th + 6 + s->padding[1] + s->padding[3];
             inner_w = MAX(inner_w, w);
         }
         h += heights[i];
     }
-    int bw = ms->border_width;
-    int pad_w = ms->padding[1] + ms->padding[3] + 2 * bw, pad_h = ms->padding[0] + ms->padding[2] + 2 * bw;
+    struct border b = style_border(ms);
+    int pad_w = ms->padding[1] + ms->padding[3] + b.w[LEFT] + b.w[RIGHT];
+    int pad_h = ms->padding[0] + ms->padding[2] + b.w[TOP] + b.w[BOTTOM];
     if (ms->width >= 0) inner_w = MAX(inner_w, ms->width - pad_w);
     m.box = (struct rect){ m.x, m.y, inner_w + pad_w, h + pad_h };
     /* keep it on screen */
@@ -146,9 +143,9 @@ static void layout(struct style *ms, struct style *is) {
     if (m.box.y + m.box.h > srv.height) m.box.y = srv.height - m.box.h;
     m.box.x = MAX(m.box.x, 0);
     m.box.y = MAX(m.box.y, 0);
-    int y = m.box.y + bw + ms->padding[0];
+    int y = m.box.y + b.w[TOP] + ms->padding[0];
     for (int i = 0; i < m.n; i++) {
-        m.items[i].r = (struct rect){ m.box.x + bw + ms->padding[3], y, inner_w, heights[i] };
+        m.items[i].r = (struct rect){ m.box.x + b.w[LEFT] + ms->padding[3], y, inner_w, heights[i] };
         y += heights[i];
     }
 }
@@ -161,22 +158,26 @@ static void relayout(void) {
 
 /* ----------------------------------------------------------------- drawing */
 
-static struct radii uniform(float r) { return (struct radii){ r, r, r, r }; }
-
 void menu_draw(struct canvas *c) {
     if (!m.open) return;
     struct style ms, is[MAX_ITEMS];
     compute(&ms, is);
     layout(&ms, is);
+    anim_style(&m, 0, &ms);
+    for (int i = 0; i < m.n; i++) anim_style(&m, 1 + i, &is[i]);   /* e.g. hover highlights fading */
     float op = ms.opacity;
-    float radius = style_radius(&ms, m.box.w, m.box.h);
+    struct radii radius = style_radii(&ms, m.box.w, m.box.h);
+    struct paint layers[2];
+    int n;
     if (ms.shadow) {
-        struct rect sr = { m.box.x + ms.shadow_x - ms.shadow_spread, m.box.y + ms.shadow_y - ms.shadow_spread,
-                           m.box.w + 2 * ms.shadow_spread, m.box.h + 2 * ms.shadow_spread };
-        draw_shadow(c, sr, radius + ms.shadow_spread, ms.shadow_blur, ms.shadow_color, op,
-                    op >= 1 ? &m.box : NULL);
+        int sp = ms.shadow_spread;
+        struct rect sr = { m.box.x + ms.shadow_x - sp, m.box.y + ms.shadow_y - sp, m.box.w + 2 * sp, m.box.h + 2 * sp };
+        struct radii srad = { radius.tl + sp, radius.tr + sp, radius.br + sp, radius.bl + sp };
+        draw_shadow(c, sr, srad, ms.shadow_blur, ms.shadow_color, op, op >= 1 ? &m.box : NULL);
     }
-    draw_box(c, m.box, uniform(radius), ms.border_width, &ms.background, ms.border_color, op, NULL);
+    struct border mb = style_border(&ms);
+    n = style_layers(&ms, layers);
+    draw_box(c, m.box, radius, &mb, layers, n, op, NULL);
 
     for (int i = 0; i < m.n; i++) {
         const struct item *it = &m.items[i];
@@ -185,19 +186,21 @@ void menu_draw(struct canvas *c) {
         if (it->kind == ITEM_SEPARATOR) {
             struct rect line = { r.x + s->margin[3], r.y + s->margin[0], r.w - s->margin[1] - s->margin[3],
                                  s->height >= 0 ? s->height : 1 };
-            draw_box(c, line, uniform(0), 0, &s->background, (struct color){ 0 }, op, NULL);
+            n = style_layers(s, layers);
+            draw_box(c, line, (struct radii){ 0 }, NULL, layers, n, op, NULL);
             continue;
         }
-        draw_box(c, r, uniform(style_radius(s, r.w, r.h)), s->border_width, &s->background,
-                 s->border_color, op, NULL);
-        const struct font *f = font_get(s->font_family);
+        struct border sb = style_border(s);
+        n = style_layers(s, layers);
+        draw_box(c, r, style_radii(s, r.w, r.h), &sb, layers, n, op, NULL);
+        const struct font *f = font_of(s);
         int th = text_height(s);
         int tx = r.x + s->padding[3], ty = r.y + (r.h - th) / 2;
         if (it->kind != ITEM_HEADING) {
             if (it->checked) draw_icon(c, (struct rect){ tx, ty, th, th }, ICON_CHECK, s->color, op);
             tx += th + 6;
         }
-        draw_text(c, f, text_scale(f, s), tx, ty, it->label, s->color, op, r.x + r.w - s->padding[1] - tx);
+        draw_text(c, f, tx, ty, it->label, s->color, op, r.x + r.w - s->padding[1] - tx, 0);
     }
 }
 
@@ -214,6 +217,7 @@ void menu_open(struct toplevel *t, int x, int y, bool keyboard) {
     m.moved = keyboard;
     m.pressed_inside = false;
     build(t);
+    anim_forget(&m);   /* a fresh menu: nothing to animate from */
     if (keyboard)   /* opened from the keyboard: highlight the first entry for arrow keys */
         for (int i = 0; i < m.n && m.hover < 0; i++) if (selectable(i)) m.hover = i;
     relayout();

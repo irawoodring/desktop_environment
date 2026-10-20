@@ -10,7 +10,8 @@
  *   7. drag and drop: drag out of the window to offer some text (with a drag icon), and
  *      drop text onto it (from another demo, a terminal, a Qt or GTK app) to receive it
  *
- * Run it with PANE_DEBUG=1 on the server to see both sides of the conversation. */
+ * Run it with PANE_DEBUG=1 on the server to see both sides of the conversation.
+ * Usage: pane-demo [window title] */
 #define _GNU_SOURCE
 #include "../src/wire.h"
 
@@ -515,7 +516,7 @@ static void roundtrip(void) {
     }
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     const char *dir = getenv("XDG_RUNTIME_DIR"), *name = getenv("WAYLAND_DISPLAY");
     if (!dir) { fprintf(stderr, "XDG_RUNTIME_DIR is not set\n"); return 1; }
     if (!name) name = "wayland-0";
@@ -537,7 +538,7 @@ int main(void) {
     send(wm_base, 2, "no", xdg_surface, surface);        /* get_xdg_surface */
     toplevel = new_id(T_TOPLEVEL);
     send(xdg_surface, 1, "n", toplevel);                 /* get_toplevel */
-    send(toplevel, 2, "s", "pane demo — raw protocol");  /* set_title */
+    send(toplevel, 2, "s", argc > 1 ? argv[1] : "pane demo — raw protocol");  /* set_title */
     send(toplevel, 3, "s", "pane-demo");                 /* set_app_id */
     if (deco_manager) {
         uint32_t deco = new_id(T_DECO);

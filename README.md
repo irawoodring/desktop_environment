@@ -8,7 +8,11 @@ The same server with [a different stylesheet](docs/example-light-theme.css), rel
 
 ![a light theme](docs/light-theme.png)
 
-About 8,300 lines in total. Each file starts with a comment explaining the idea it implements.
+And [a tiling theme](docs/example-tiling-theme.css) on a wallpaper, where CSS also decides the window layout:
+
+![a tiling theme](docs/tiling-theme.png)
+
+About 10,300 lines in total. Each file starts with a comment explaining the idea it implements.
 
 ## Building
 
@@ -18,7 +22,8 @@ Dependencies (all available in LFS/BLFS):
 |---|---|---|
 | gcc, make, pkg-config | building | LFS |
 | Linux API headers | `<drm/drm.h>`, `<linux/input.h>` | LFS chapter 5 |
-| zlib | reading `.psf.gz` console fonts, writing PNG screenshots | LFS |
+| zlib | PNG images (wallpapers, screenshots), `.psf.gz` console fonts | LFS |
+| FreeType *(optional)* | TrueType/OpenType fonts; without it, console fonts only | BLFS |
 | libxkbcommon + xkeyboard-config | keyboard layouts; clients need the same keymap | BLFS |
 | libcss, libparserutils, libwapcaplet *(optional)* | the full CSS engine (see [Theming](#theming)) | NetSurf, below |
 
@@ -27,7 +32,7 @@ make            # builds build/pane and build/pane-demo
 make install    # optional: /usr/local/bin, theme in /usr/local/share/pane
 ```
 
-The build uses libcss if `pkg-config` can find it, and the built-in CSS engine otherwise. `make CSS=builtin` or `make CSS=libcss` forces one or the other, and `make` reports which one it used.
+The build uses libcss if `pkg-config` can find it, and the built-in CSS engine otherwise. `make CSS=builtin` or `make CSS=libcss` forces one or the other. FreeType is likewise used when found (`make FREETYPE=no` to leave it out). `make` reports what it picked.
 
 ### Building libcss
 
@@ -114,17 +119,45 @@ menu              (the window menu)
 cursor
 ```
 
-Supported properties: `background` (colors and `linear-gradient(...)`), `color`, `border`, `border-width`, `border-color`, `border-radius` (px or %), `box-shadow`, `opacity`, `padding`, `margin`, `width`, `height`, `font-family`, `font-size`, `text-align`, `display: none`, and `float: left|right` (button placement).
+Supported properties:
 
-Selectors and values: type, `.class`, `:state`, `[attr=v]`, `[attr*=v]`, `[attr^=v]`, `[attr$=v]`, descendant and `>` combinators; custom properties (`--accent: #7aa2f7` plus `var(--accent)`); named colors, `#rgb`, `#rrggbbaa`, `rgb()`, `rgba()`.
+| Area | Properties |
+|---|---|
+| Boxes | `background` / `background-color` / `background-image` (colors, `linear-gradient()`, `radial-gradient()`, `url(file.png)`, several layers), `background-size` (`cover`, `contain`, lengths), `background-position`, `background-repeat`, `opacity`, `padding`, `margin`, `width`, `height` |
+| Borders | `border` and every per-side longhand (`border-top`, `border-left-color`, ...), `border-radius` with per-corner values (`12px 12px 4px 4px`, `border-top-left-radius`, px or %), `box-shadow` |
+| Text | `color`, `font-family` (a list, with generic `sans-serif`/`serif`/`monospace`), `font-size`, `font-weight`, `font-style`, `text-align` |
+| Motion | `transition: <property> <duration> [easing] [delay], ...` with `ease`, `linear`, `ease-in/out`, `cubic-bezier()` |
+| Layout | `display: none`, `float: left\|right` (button placement); on `titlebar`: `side: top\|right\|bottom\|left`; on `desktop`: `window-layout`, `gap`, `tile-ratio`, `padding`; on `window`: `tile: no` |
 
-Fonts are Linux console PSF fonts, named as they appear in `/usr/share/consolefonts` (for example `"Lat2-Terminus16"`). `font-size` scales them by whole multiples.
+Selectors and values: type, `.class`, `:state`, `[attr=v]`, `[attr*=v]`, `[attr^=v]`, `[attr$=v]`, descendant and `>` combinators; custom properties (`--accent: #7aa2f7` plus `var(--accent)`); named colors, `#rgb`, `#rrggbbaa`, `rgb()`, `rgba()`, `currentColor`.
 
 ```css
 window[app-id="foot"] titlebar { background: #2d7d46; }   /* per-app colors */
 button { float: right; }                                  /* Windows-style button side */
 window:maximized { border-radius: 0; box-shadow: none; }
+window { transition: border-color 200ms, box-shadow 250ms ease-out; }
+desktop { background: url(~/wallpaper.png) center / cover no-repeat #1a1b26; }
 ```
+
+**Fonts.** With FreeType, `font-family` names any TrueType/OpenType family installed under `/usr/share/fonts`, `/usr/local/share/fonts` or `~/.local/share/fonts` (pane scans those directories itself, no fontconfig needed). Without FreeType, or when no listed family is found, it falls back to Linux console PSF fonts, named as in `/usr/share/consolefonts` (for example `"Lat2-Terminus16"`), which scale by whole multiples. List both, and the theme works either way.
+
+**Images.** `url()` takes PNG files (any color type, bit depth or interlacing; pane has its own decoder on top of zlib). Relative paths are relative to the theme file, and `~/` is your home directory. Images are decoded once and cached, along with scaled copies.
+
+**Transitions.** When a style changes (a window gains focus, a button is hovered), colors, opacity, radii, shadows and gradients with matching stops blend from the old value to the new one. Sizes, images and fonts switch immediately.
+
+**Layout.** `window-layout` on `desktop` chooses how windows are arranged:
+
+| Value | Arrangement |
+|---|---|
+| `floating` | the default: windows go where you put them |
+| `tile` | one main window on the left (`tile-ratio` of the width), the rest stacked on the right |
+| `columns`, `rows` | equal columns or rows |
+| `grid` | as square a grid as fits |
+| `monocle` | every window fills the screen |
+
+`gap` is the space between tiled windows, and `padding` on `desktop` keeps a margin around the screen (also respected when maximizing). Drag a tiled window's title bar onto another to swap them. A window with `tile: no` floats above the tiles. The default theme defines a `float` class with that rule, so you can float any window from its window menu. Tiled apps are told they're tiled (`xdg_toplevel` tiled states), so GTK drops its rounded corners and shadows.
+
+`side` moves the title bar to any edge of the window; on the left or right, its text runs vertically and `width` sets its thickness. The default theme's `sidebar` and `bare` classes show this, and how to hide the title bar altogether.
 
 See [theme.css](theme.css) (the default) and [docs/example-light-theme.css](docs/example-light-theme.css).
 
@@ -149,7 +182,7 @@ The same theme file works with either engine; both render the default and exampl
 - **libcss** (`src/css_libcss.c`) is NetSurf's engine: real CSS 2.1 parsing and the full selector syntax, so you get things like `:not()` and `[attr|=v]`. For example, `window:not(:focused) titlebar { opacity: 0.6 }` works. (pane's tree has no siblings, so sibling selectors such as `+` and `~` never match.) It implements libcss's callback interface (`css_select_handler`) over pane's element tree, and libcss calls back with questions like "what's this node's parent?" or "is it hovered?".
 - **built-in** (`src/css.c`) has no dependencies and supports the selector subset listed above.
 
-libcss doesn't support `border-radius`, `box-shadow`, gradients or `var()`, which most themes want. Before the sheet reaches libcss, `css.c` therefore rewrites it, much like a CSS preprocessor would: `var()` references are substituted, and those three values travel inside standard properties pane doesn't otherwise use (`max-width`, `content` and `background-image: url(...)`). libcss does all the matching and cascading, and pane unpacks the three values afterwards. To see exactly what libcss receives, run with `PANE_CSS_DEBUG=1`.
+libcss only knows CSS 2.1, so it doesn't support `border-radius`, `box-shadow`, gradients, `transition`, `var()`, or pane's own layout properties. Before the sheet reaches libcss, `css.c` therefore rewrites it, much like a CSS preprocessor would: `var()` references are substituted, gradients travel inside `background-image: url(...)`, and each property libcss doesn't know gets a stylesheet of its own, in which every rule that sets it becomes `<same selector> { content: "<value>" }`. Running libcss's cascade once per such sheet gives the winning value for that property with the right specificity and order, and pane parses it from the `content` string. To see exactly what libcss receives, run with `PANE_CSS_DEBUG=1`.
 
 With libcss, a few things behave as in a browser rather than as in the built-in engine. A border needs a style to be drawn (`border: 1px solid red` rather than just `border-width: 1px`), and libcss reports its own syntax errors by silently dropping the bad declaration. pane still prints errors for the values it parses itself.
 
@@ -181,11 +214,14 @@ Commands are processed as fast as they arrive, so put small pauses between a but
 | `src/compositor.c` | `wl_surface` (double-buffered state, commit), `wl_region`, subsurfaces, `wl_shm` (shared-memory pixels; SIGBUS-safe copy) |
 | `src/xdg.c` | windows and popups (`xdg_wm_base`), the configure/ack handshake, popup positioning, `xdg-decoration` |
 | `src/seat.c` | pointer, keyboard (xkbcommon keymap shared via a sealed memfd), keybindings, clipboard, drag and drop |
-| `src/wm.c` | window management: stacking, focus, hit-testing, move/resize/maximize, popup grabs, drawing |
+| `src/wm.c` | window management: stacking, focus, hit-testing, move/resize/maximize, tiling layouts, popup grabs, drawing |
 | `src/menu.c` | the window menu: actions and toggling a window's CSS classes |
+| `src/anim.c` | CSS transitions: remembers what each element showed and eases towards new styles |
 | `src/css.c` | the built-in CSS engine (tokenizer, parser, selector matcher, cascade), the value parser, and the rewrite for libcss |
 | `src/css_libcss.c` | the libcss engine: the selection callbacks over pane's element tree, and turning computed styles back into pane's |
-| `src/render.c`, `src/font.c` | software rasterizer (signed-distance rounded corners, gradients, shadows) and PSF fonts |
+| `src/render.c` | software rasterizer: signed-distance rounded corners, per-side borders, gradients, image layers, shadows |
+| `src/font.c` | text: FreeType fonts found by scanning font directories, PSF console fonts, kerning, ellipsis, rotation |
+| `src/image.c` | a PNG decoder (on zlib) and smooth scaling, both cached |
 | `src/backend_drm.c` | raw KMS ioctls: connectors, CRTCs, dumb buffers, page flips (no libdrm) |
 | `src/backend_fbdev.c`, `src/backend_headless.c` | the fallback and testing backends |
 | `src/input.c` | evdev devices, hotplug via inotify |
@@ -196,7 +232,7 @@ Commands are processed as fast as they arrive, so put small pauses between a but
 
 ## Status and next steps
 
-The protocol, window management, both CSS engines and drag and drop were tested headless against Qt 6, GTK 4, foot, weston-simple-shm and wl-clipboard, with sanitizers (ASan/UBSan) enabled. The drag-and-drop tests covered demo to demo, demo to foot, Qt to demo, drops on the desktop, Escape, and the source client being killed mid-drag. **The DRM, fbdev and evdev code paths compile, but I haven't been able to run them on real hardware.** They follow the standard KMS sequence, but expect to debug on first boot. pane's startup output names the connector, mode and input devices it found, which is the place to start.
+The protocol, window management, both CSS engines, drag and drop, tiling, transitions, fonts and PNG decoding (checked pixel for pixel against a reference decoder) were tested headless against Qt 6, GTK 4, foot, weston-simple-shm and wl-clipboard, with sanitizers (ASan/UBSan) enabled. The drag-and-drop tests covered demo to demo, demo to foot, Qt to demo, drops on the desktop, Escape, and the source client being killed mid-drag. **The DRM, fbdev and evdev code paths compile, but I haven't been able to run them on real hardware.** They follow the standard KMS sequence, but expect to debug on first boot. pane's startup output names the connector, mode and input devices it found, which is the place to start.
 
 Implemented: `wl_compositor` 5, `wl_subcompositor` 1, `wl_shm` 1, `wl_output` 4, `wl_seat` 7, `wl_data_device_manager` 3 (clipboard, drag and drop), `xdg_wm_base` 3, `zxdg_decoration_manager_v1` 1.
 
@@ -207,4 +243,4 @@ Good next projects:
 - **`linux-dmabuf`** for GPU-rendered clients, which means Mesa, GBM and EGL
 - **Xwayland** for X11-only apps; it's just another Wayland client plus some window-manager glue
 - The primary selection (middle-click paste), `xdg-activation`, a panel or launcher written as a client
-- FreeType text, so `font-family` can name real fonts
+- JPEG wallpapers (libjpeg), and subpixel font rendering

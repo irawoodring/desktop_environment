@@ -21,9 +21,10 @@
  *                 set (:not(), :nth-child(), ...), the cascade and inheritance.
  *   css.c         a small built-in engine with no dependencies.
  *
- * libcss doesn't know border-radius, box-shadow, gradients or var(). css.c rewrites
- * those before the sheet reaches libcss (see css_rewrite_for_libcss), so themes are
- * the same file whichever engine is in use. */
+ * libcss doesn't know several properties pane uses (border-radius, box-shadow,
+ * transitions, gradients, var(), the layout properties). css.c rewrites the theme before
+ * it reaches libcss (see css_rewrite_for_libcss), so themes are the same file whichever
+ * engine is in use. */
 #pragma once
 #include "render.h"
 
@@ -42,25 +43,45 @@ struct css_elem {
 };
 
 enum { ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT };
+enum { LAYOUT_FLOATING, LAYOUT_TILE, LAYOUT_COLUMNS, LAYOUT_ROWS, LAYOUT_GRID, LAYOUT_MONOCLE };
+
+/* one entry of `transition`: animate `prop` over duration_ms, after delay_ms, with an easing curve */
+struct transition { char prop[24]; int duration_ms, delay_ms; float bezier[4]; };
 
 struct style {
-    struct paint background;
+    /* backgrounds: a color, with a gradient or image layer on top */
+    struct paint background;           /* background-color (PAINT_COLOR or PAINT_NONE) */
+    struct paint background_image;     /* a gradient, an image, or PAINT_NONE */
+    int bg_size_mode;                  /* SIZE_*: background-size */
+    struct length bg_size_w, bg_size_h;
+    struct length bg_pos_x, bg_pos_y;  /* background-position */
+    bool bg_repeat_x, bg_repeat_y;     /* background-repeat */
     struct color color;
-    int border_width;
-    struct color border_color;
-    float radius;
-    bool radius_pct;
-    int padding[4], margin[4];     /* top, right, bottom, left */
-    int width, height;             /* -1 = auto */
+    /* borders: widths and colors per side; a side is only drawn if its style isn't none */
+    struct border border;
+    bool border_drawn[4];
+    bool border_color_set[4];          /* else it's currentColor */
+    struct length radius[4];           /* corners: top-left, top-right, bottom-right, bottom-left */
+    int padding[4], margin[4];         /* top, right, bottom, left */
+    int width, height;                 /* -1 = auto */
     bool shadow;
     int shadow_x, shadow_y, shadow_blur, shadow_spread;
     struct color shadow_color;
     float opacity;
-    char font_family[64];
-    int font_size;
+    char font_family[128];             /* a CSS list: "DejaVu Sans, sans-serif" */
+    int font_size, font_weight;
+    bool font_italic;
     int text_align;
-    bool hidden;                   /* display: none */
-    bool float_left;               /* float: left (buttons) */
+    bool hidden;                       /* display: none */
+    bool float_left;                   /* float: left (buttons) */
+    int ntransitions;
+    struct transition transitions[6];
+    /* layout (pane-specific properties) */
+    int side;                          /* titlebar: which edge it sits on (TOP, RIGHT, BOTTOM, LEFT) */
+    int window_layout;                 /* desktop: LAYOUT_* */
+    int gap;                           /* desktop: space between tiled windows */
+    float tile_ratio;                  /* desktop: master area share in the "tile" layout */
+    bool tile;                         /* window: take part in tiling layouts */
 };
 
 /* ---- the engine interface (css.c or css_libcss.c) ---- */
@@ -77,11 +98,23 @@ const char *css_engine_name(void);
 /* ---- shared helpers (css.c) ---- */
 
 void style_init(struct style *s, const struct style *parent);   /* initial + inherited values */
-float style_radius(const struct style *s, int w, int h);       /* resolves percentages */
+void style_finish(struct style *s);    /* resolve what depends on other properties (currentColor) */
+struct radii style_radii(const struct style *s, int w, int h);  /* resolves percentages */
+struct border style_border(const struct style *s);              /* only the sides actually drawn */
+/* the background as paint layers, bottom first (color, then gradient/image); returns how many */
+int style_layers(const struct style *s, struct paint out[2]);
+/* where theme-relative paths (url(...)) are resolved from */
+void css_set_base_dir(const char *theme_path);
 /* Parse one declaration with the built-in value parser and apply it, e.g. ("box-shadow", "0 4px 8px black"). */
 bool css_apply_property(struct style *s, const char *name, const char *value);
-/* Turn a pane theme into plain CSS libcss can parse. Returns a malloc'd string. */
-char *css_rewrite_for_libcss(const char *text, const char *file);
+/* Turn a pane theme into CSS libcss can parse: one main sheet, plus one small sheet per
+ * property libcss doesn't know (each carries that property's values in `content`, so
+ * libcss can run a separate cascade for it). Free with css_rewritten_free(). */
+#define CSS_NEXT 12
+extern const char *const css_ext_props[CSS_NEXT];
+struct css_rewritten { char *main; char *ext[CSS_NEXT]; };
+struct css_rewritten css_rewrite_for_libcss(const char *text, const char *file);
+void css_rewritten_free(struct css_rewritten *r);
 /* Defaults for things a theme may not style (the window menu); themes override them. */
 extern const char css_base_sheet[];
 /* The classes the loaded theme uses on windows (window.work ...): i = 0, 1, ... until NULL. */

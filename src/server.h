@@ -9,6 +9,8 @@
  *   seat.c        wl_seat, wl_pointer, wl_keyboard (xkbcommon), clipboard (wl_data_device)
  *   wm.c          window management: stacking, focus, input routing, move/resize, drawing
  *   menu.c        the window menu (actions, and toggling CSS classes on a window)
+ *   anim.c        CSS transitions
+ *   image.c       PNG decoding and scaling, for background images
  *   input.c       reading /dev/input/event* (evdev)
  *   render.c      software rasterizer: boxes, gradients, shadows, text, image blits
  *   css.c         the CSS engine that styles everything the server draws
@@ -237,6 +239,11 @@ struct toplevel {
     struct toplevel *parent;
     int conf_w, conf_h;            /* size in the last configure we sent */
     char classes[256];             /* CSS classes, space-separated (set from the window menu) */
+    struct list tile_link;         /* wm tiling order (mapping order; dragging can swap) */
+    bool tiled;                    /* placed by a tiling layout right now */
+    bool lifted;                   /* a tiled window being dragged out of its slot */
+    bool float_saved;              /* float_geom holds where it was before tiling */
+    struct rect float_geom;
 };
 
 struct popup {
@@ -336,6 +343,14 @@ void wm_window_fullscreen(struct toplevel *t, bool on);
 void wm_window_toggle_class(struct toplevel *t, const char *cls);
 bool wm_window_has_class(struct toplevel *t, const char *cls);
 void wm_menu_closed(void);
+
+/* ====================================================================== anim.c */
+struct style;
+/* Turn a freshly computed target style into what to show now, mid-transition if needed.
+ * owner + part identify the element across frames (e.g. a toplevel and "its title bar"). */
+void anim_style(const void *owner, int part, struct style *s);
+void anim_forget(const void *owner);
+bool anim_frame_done(void);   /* after drawing: is something still animating? */
 
 /* ====================================================================== menu.c */
 void menu_open(struct toplevel *t, int x, int y, bool keyboard);

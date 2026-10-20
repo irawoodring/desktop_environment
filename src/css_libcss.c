@@ -21,9 +21,6 @@
 /* slots in css_elem.engine[] */
 enum { SLOT_NODE_DATA, SLOT_RESULTS, SLOT_COMPOSED, SLOT_CLASSES };
 
-static css_select_ctx *select_ctx;
-static css_stylesheet *sheet;
-static css_stylesheet *ua_sheet;   /* css_base_sheet, at "user agent" origin */
 
 static css_unit_ctx unit_ctx = {
     .viewport_width = 1920 * (1 << CSS_RADIX_POINT),
@@ -305,13 +302,11 @@ static css_select_handler handler = {
 
 static css_error resolve_url(void *pw, const char *base, lwc_string *rel, lwc_string **abs) {
     (void)pw; (void)base;
-    *abs = lwc_string_ref(rel);   /* keep url("...") text exactly: it may be a gradient */
+    *abs = lwc_string_ref(rel);   /* keep url("...") text exactly: a path, or a gradient */
     return CSS_OK;
 }
 
-static css_stylesheet *parse(const char *text, const char *name) {
-    char *css = css_rewrite_for_libcss(text, name);
-    if (getenv("PANE_CSS_DEBUG")) fprintf(stderr, "--- %s as given to libcss:\n%s---\n", name, css);
+static css_stylesheet *parse(const char *css, const char *name) {
     css_stylesheet_params params = {
         .params_version = CSS_STYLESHEET_PARAMS_VERSION_1,
         .level = CSS_LEVEL_DEFAULT,
@@ -327,7 +322,6 @@ static css_stylesheet *parse(const char *text, const char *name) {
         if (err == CSS_NEEDDATA) err = CSS_OK;
     }
     if (err == CSS_OK) err = css_stylesheet_data_done(sh);
-    free(css);
     if (err != CSS_OK) {
         fprintf(stderr, "pane: libcss rejected %s: %s\n", name, css_error_to_string(err));
         if (sh) css_stylesheet_destroy(sh);
@@ -336,26 +330,61 @@ static css_stylesheet *parse(const char *text, const char *name) {
     return sh;
 }
 
+/* A loaded theme: the main sheet, plus a sheet per extension property (css.c explains),
+ * each paired with the same thing from the built-in defaults, in its own selection context. */
+struct sheets {
+    css_stylesheet *ua[1 + CSS_NEXT], *author[1 + CSS_NEXT];
+    css_select_ctx *ctx[1 + CSS_NEXT];   /* [0] = main; NULL where nothing sets the property */
+};
+static struct sheets active, ua;
+
+static void sheets_free(struct sheets *s, bool with_ua) {
+    for (int i = 0; i <= CSS_NEXT; i++) {
+        if (s->ctx[i]) css_select_ctx_destroy(s->ctx[i]);
+        if (s->author[i]) css_stylesheet_destroy(s->author[i]);
+        if (with_ua && s->ua[i]) css_stylesheet_destroy(s->ua[i]);
+    }
+    memset(s, 0, sizeof *s);
+}
+
+static bool parse_all(const char *text, const char *name, css_stylesheet *out[1 + CSS_NEXT]) {
+    struct css_rewritten rw = css_rewrite_for_libcss(text, name);
+    if (getenv("PANE_CSS_DEBUG")) {
+        fprintf(stderr, "--- %s as given to libcss:\n%s", name, rw.main);
+        for (int i = 0; i < CSS_NEXT; i++)
+            if (rw.ext[i]) fprintf(stderr, "--- %s, %s:\n%s", name, css_ext_props[i], rw.ext[i]);
+        fprintf(stderr, "---\n");
+    }
+    bool ok = (out[0] = parse(rw.main, name)) != NULL;
+    for (int i = 0; ok && i < CSS_NEXT; i++)
+        if (rw.ext[i] && !(out[1 + i] = parse(rw.ext[i], name))) ok = false;
+    css_rewritten_free(&rw);
+    return ok;
+}
+
 static int load_text(const char *text, const char *name) {
-    if (!ua_sheet && !(ua_sheet = parse(css_base_sheet, "(built-in defaults)"))) return -1;
+    if (!ua.ua[0] && !parse_all(css_base_sheet, "(built-in defaults)", ua.ua)) return -1;
     css_window_classes_reset();
-    css_stylesheet *new_sheet = parse(text, name);
-    if (!new_sheet) return -1;
-    /* the cascade puts author (theme) rules above user-agent rules, whatever their specificity */
-    css_select_ctx *new_ctx = NULL;
-    css_error err = css_select_ctx_create(&new_ctx);
-    if (err == CSS_OK) err = css_select_ctx_append_sheet(new_ctx, ua_sheet, CSS_ORIGIN_UA, NULL);
-    if (err == CSS_OK) err = css_select_ctx_append_sheet(new_ctx, new_sheet, CSS_ORIGIN_AUTHOR, NULL);
-    if (err != CSS_OK) {
-        fprintf(stderr, "pane: libcss: %s\n", css_error_to_string(err));
-        if (new_ctx) css_select_ctx_destroy(new_ctx);
-        css_stylesheet_destroy(new_sheet);
+    struct sheets next = { 0 };
+    if (!parse_all(text, name, next.author)) {
+        sheets_free(&next, false);
         return -1;
     }
-    if (select_ctx) css_select_ctx_destroy(select_ctx);
-    if (sheet) css_stylesheet_destroy(sheet);
-    select_ctx = new_ctx;
-    sheet = new_sheet;
+    /* the cascade puts author (theme) rules above user-agent rules, whatever their specificity */
+    for (int i = 0; i <= CSS_NEXT; i++) {
+        if (!ua.ua[i] && !next.author[i]) continue;
+        css_error err = css_select_ctx_create(&next.ctx[i]);
+        if (err == CSS_OK && ua.ua[i]) err = css_select_ctx_append_sheet(next.ctx[i], ua.ua[i], CSS_ORIGIN_UA, NULL);
+        if (err == CSS_OK && next.author[i])
+            err = css_select_ctx_append_sheet(next.ctx[i], next.author[i], CSS_ORIGIN_AUTHOR, NULL);
+        if (err != CSS_OK) {
+            fprintf(stderr, "pane: libcss: %s\n", css_error_to_string(err));
+            sheets_free(&next, false);
+            return -1;
+        }
+    }
+    sheets_free(&active, false);
+    active = next;
     return 0;
 }
 
@@ -369,6 +398,8 @@ int css_load_file(const char *path) {
     size_t n = fread(text, 1, len, f);
     text[n] = '\0';
     fclose(f);
+    css_set_base_dir(path);
+    image_cache_clear();   /* pick up edited images too */
     int r = load_text(text, path);
     free(text);
     if (r == 0) fprintf(stderr, "pane: loaded %s with libcss\n", path);
@@ -385,12 +416,18 @@ static int to_px(const css_computed_style *cs, css_fixed len, css_unit unit) {
     return (int)lroundf(FIXTOFLT(css_unit_len2device_px(cs, &unit_ctx, len, unit)));
 }
 
+static struct length to_length(const css_computed_style *cs, css_fixed len, css_unit unit) {
+    if (unit == CSS_UNIT_PCT) return (struct length){ FIXTOFLT(len), true };
+    return (struct length){ to_px(cs, len, unit), false };
+}
+
 static struct color to_color(css_color c) {   /* libcss colors are 0xAARRGGBB */
     return (struct color){ (c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff, c >> 24 };
 }
 
-static void side_lengths(const css_computed_style *cs, int out[4],
-                         uint8_t (*get[4])(const css_computed_style *, css_fixed *, css_unit *)) {
+typedef uint8_t (*len_getter)(const css_computed_style *, css_fixed *, css_unit *);
+
+static void side_lengths(const css_computed_style *cs, int out[4], const len_getter get[4]) {
     for (int i = 0; i < 4; i++) {
         css_fixed len;
         css_unit unit;
@@ -399,57 +436,66 @@ static void side_lengths(const css_computed_style *cs, int out[4],
     }
 }
 
+static void lwc_copy(char *out, size_t n, lwc_string *s) {
+    snprintf(out, n, "%.*s", (int)lwc_string_length(s), lwc_string_data(s));
+}
+
 static void translate(const css_computed_style *cs, struct style *s) {
     css_color c;
-    css_fixed len;
-    css_unit unit;
+    css_fixed len, len2;
+    css_unit unit, unit2;
     lwc_string *str;
 
     if (css_computed_color(cs, &c) == CSS_COLOR_COLOR) s->color = to_color(c);
 
-    s->background.kind = PAINT_NONE;
-    if (css_computed_background_color(cs, &c) == CSS_BACKGROUND_COLOR_COLOR && (c >> 24)) {
-        s->background.kind = PAINT_COLOR;
-        s->background.color = to_color(c);
-    }
+    if (css_computed_background_color(cs, &c) == CSS_BACKGROUND_COLOR_COLOR && (c >> 24))
+        s->background = (struct paint){ .kind = PAINT_COLOR, .color = to_color(c) };
     if (css_computed_background_image(cs, &str) == CSS_BACKGROUND_IMAGE_IMAGE && str) {
-        char buf[512];
-        snprintf(buf, sizeof buf, "%.*s", (int)lwc_string_length(str), lwc_string_data(str));
-        css_apply_property(s, "background", buf);   /* a rewritten linear-gradient(...) */
+        char buf[1024];
+        lwc_copy(buf, sizeof buf, str);
+        if (strchr(buf, '(')) css_apply_property(s, "background-image", buf);   /* a gradient */
+        else {
+            char url[1100];
+            snprintf(url, sizeof url, "url(\"%s\")", buf);
+            css_apply_property(s, "background-image", url);
+        }
+    }
+    if (css_computed_background_position(cs, &len, &unit, &len2, &unit2) == CSS_BACKGROUND_POSITION_SET) {
+        s->bg_pos_x = to_length(cs, len, unit);
+        s->bg_pos_y = to_length(cs, len2, unit2);
+    }
+    switch (css_computed_background_repeat(cs)) {
+    case CSS_BACKGROUND_REPEAT_REPEAT_X: s->bg_repeat_x = true; s->bg_repeat_y = false; break;
+    case CSS_BACKGROUND_REPEAT_REPEAT_Y: s->bg_repeat_x = false; s->bg_repeat_y = true; break;
+    case CSS_BACKGROUND_REPEAT_NO_REPEAT: s->bg_repeat_x = s->bg_repeat_y = false; break;
+    default: s->bg_repeat_x = s->bg_repeat_y = true; break;
     }
 
-    /* pane draws one border width/color, so use the top side. CSS says a border with
-     * style none has width 0; libcss leaves that rule to the caller (layout), as browsers do. */
-    uint8_t bstyle = css_computed_border_top_style(cs);
-    if (bstyle != CSS_BORDER_STYLE_NONE && bstyle != CSS_BORDER_STYLE_HIDDEN &&
-        css_computed_border_top_width(cs, &len, &unit) == CSS_BORDER_WIDTH_WIDTH)
-        s->border_width = MAX(to_px(cs, len, unit), 0);
-    if (css_computed_border_top_color(cs, &c) == CSS_BORDER_COLOR_COLOR) s->border_color = to_color(c);
-
-    /* border-radius rode in max-width */
-    if (css_computed_max_width(cs, &len, &unit) == CSS_MAX_WIDTH_SET) {
-        s->radius_pct = unit == CSS_UNIT_PCT;
-        s->radius = s->radius_pct ? FIXTOFLT(len) : to_px(cs, len, unit);
+    /* borders: libcss resolves currentColor; a side with style none draws nothing */
+    static const len_getter widths[4] = { css_computed_border_top_width, css_computed_border_right_width,
+                                          css_computed_border_bottom_width, css_computed_border_left_width };
+    static uint8_t (*const colors[4])(const css_computed_style *, css_color *) = {
+        css_computed_border_top_color, css_computed_border_right_color,
+        css_computed_border_bottom_color, css_computed_border_left_color };
+    static uint8_t (*const styles[4])(const css_computed_style *) = {
+        css_computed_border_top_style, css_computed_border_right_style,
+        css_computed_border_bottom_style, css_computed_border_left_style };
+    for (int i = 0; i < 4; i++) {
+        uint8_t st = styles[i](cs);
+        s->border_drawn[i] = st != CSS_BORDER_STYLE_NONE && st != CSS_BORDER_STYLE_HIDDEN;
+        if (widths[i](cs, &len, &unit) == CSS_BORDER_WIDTH_WIDTH) s->border.w[i] = MAX(to_px(cs, len, unit), 0);
+        if (colors[i](cs, &c) == CSS_BORDER_COLOR_COLOR) {
+            s->border.c[i] = to_color(c);
+            s->border_color_set[i] = true;
+        }
     }
 
-    /* box-shadow rode in content: "..." */
-    const css_computed_content_item *content;
-    if (css_computed_content(cs, &content) == CSS_CONTENT_SET && content &&
-        content->type == CSS_COMPUTED_CONTENT_STRING) {
-        char buf[256];
-        lwc_string *t = content->data.string;
-        snprintf(buf, sizeof buf, "%.*s", (int)lwc_string_length(t), lwc_string_data(t));
-        css_apply_property(s, "box-shadow", buf);
-    }
-
-    static uint8_t (*const pad[4])(const css_computed_style *, css_fixed *, css_unit *) = {
-        css_computed_padding_top, css_computed_padding_right, css_computed_padding_bottom,
-        css_computed_padding_left };
-    static uint8_t (*const mar[4])(const css_computed_style *, css_fixed *, css_unit *) = {
-        css_computed_margin_top, css_computed_margin_right, css_computed_margin_bottom,
-        css_computed_margin_left };
-    side_lengths(cs, s->padding, (void *)pad);
-    side_lengths(cs, s->margin, (void *)mar);
+    static const len_getter pad[4] = { css_computed_padding_top, css_computed_padding_right,
+                                       css_computed_padding_bottom, css_computed_padding_left };
+    static const len_getter mar[4] = { css_computed_margin_top, css_computed_margin_right,
+                                       css_computed_margin_bottom, css_computed_margin_left };
+    side_lengths(cs, s->padding, pad);
+    side_lengths(cs, s->margin, mar);
 
     s->width = css_computed_width(cs, &len, &unit) == CSS_WIDTH_SET && unit != CSS_UNIT_PCT ? to_px(cs, len, unit) : -1;
     s->height = css_computed_height(cs, &len, &unit) == CSS_HEIGHT_SET && unit != CSS_UNIT_PCT ? to_px(cs, len, unit) : -1;
@@ -457,13 +503,34 @@ static void translate(const css_computed_style *cs, struct style *s) {
     css_fixed op;
     if (css_computed_opacity(cs, &op) == CSS_OPACITY_SET) s->opacity = CLAMP(FIXTOFLT(op), 0.0f, 1.0f);
 
+    /* font-family: the named families, then the generic one if the list ended with one */
     lwc_string **names = NULL;
-    css_computed_font_family(cs, &names);
-    if (names && names[0])
-        snprintf(s->font_family, sizeof s->font_family, "%.*s", (int)lwc_string_length(names[0]),
-                 lwc_string_data(names[0]));
+    uint8_t generic = css_computed_font_family(cs, &names);
+    char fam[128] = "";
+    for (int i = 0; names && names[i]; i++) {
+        char one[64];
+        lwc_copy(one, sizeof one, names[i]);
+        if (fam[0]) strncat(fam, ",", sizeof fam - strlen(fam) - 1);
+        strncat(fam, one, sizeof fam - strlen(fam) - 1);
+    }
+    static const char *const generics[] = { [CSS_FONT_FAMILY_SERIF] = "serif",
+                                            [CSS_FONT_FAMILY_SANS_SERIF] = "sans-serif",
+                                            [CSS_FONT_FAMILY_MONOSPACE] = "monospace" };
+    if (generic < ARRAY_LEN(generics) && generics[generic] && (fam[0] || generic != CSS_FONT_FAMILY_MONOSPACE)) {
+        if (fam[0]) strncat(fam, ",", sizeof fam - strlen(fam) - 1);
+        strncat(fam, generics[generic], sizeof fam - strlen(fam) - 1);
+    }
+    if (fam[0]) snprintf(s->font_family, sizeof s->font_family, "%s", fam);
     if (css_computed_font_size(cs, &len, &unit) == CSS_FONT_SIZE_DIMENSION)
         s->font_size = MAX(to_px(cs, len, unit), 1);
+    uint8_t fw = css_computed_font_weight(cs);
+    if (fw == CSS_FONT_WEIGHT_NORMAL) s->font_weight = 400;
+    else if (fw == CSS_FONT_WEIGHT_BOLD) s->font_weight = 700;
+    else if (fw == CSS_FONT_WEIGHT_BOLDER) s->font_weight = MIN(s->font_weight + 300, 900);
+    else if (fw == CSS_FONT_WEIGHT_LIGHTER) s->font_weight = MAX(s->font_weight - 300, 100);
+    else if (fw >= CSS_FONT_WEIGHT_100 && fw <= CSS_FONT_WEIGHT_900) s->font_weight = (fw - CSS_FONT_WEIGHT_100 + 1) * 100;
+    uint8_t fs = css_computed_font_style(cs);
+    if (fs != CSS_FONT_STYLE_INHERIT) s->font_italic = fs == CSS_FONT_STYLE_ITALIC || fs == CSS_FONT_STYLE_OBLIQUE;
 
     switch (css_computed_text_align(cs)) {
     case CSS_TEXT_ALIGN_CENTER: s->text_align = ALIGN_CENTER; break;
@@ -475,12 +542,17 @@ static void translate(const css_computed_style *cs, struct style *s) {
     s->float_left = css_computed_float(cs) == CSS_FLOAT_LEFT;
 }
 
+static css_select_results *select_in(css_select_ctx *ctx, struct css_elem *e) {
+    css_select_results *res = NULL;
+    if (css_select_style(ctx, e, &unit_ctx, &media, NULL, &handler, NULL, &res) != CSS_OK) return NULL;
+    return res;
+}
+
 void css_compute(struct css_elem *e, const struct style *parent, struct style *s) {
     style_init(s, parent);
-    if (!select_ctx) return;
-    css_select_results *res = NULL;
-    if (css_select_style(select_ctx, e, &unit_ctx, &media, NULL, &handler, NULL, &res) != CSS_OK || !res)
-        return;
+    if (!active.ctx[0]) return;
+    css_select_results *res = select_in(active.ctx[0], e);
+    if (!res) return;
     e->engine[SLOT_RESULTS] = res;
     css_computed_style *cs = res->styles[CSS_PSEUDO_ELEMENT_NONE];
     if (!cs) return;
@@ -497,6 +569,23 @@ void css_compute(struct css_elem *e, const struct style *parent, struct style *s
         }
     }
     translate(cs, s);
+
+    /* each extension property: its own cascade, its winning value in `content` */
+    for (int i = 0; i < CSS_NEXT; i++) {
+        if (!active.ctx[1 + i]) continue;
+        css_select_results *r = select_in(active.ctx[1 + i], e);
+        if (!r) continue;
+        const css_computed_content_item *item;
+        css_computed_style *xs = r->styles[CSS_PSEUDO_ELEMENT_NONE];
+        if (xs && css_computed_content(xs, &item) == CSS_CONTENT_SET && item &&
+            item->type == CSS_COMPUTED_CONTENT_STRING) {
+            char value[512];
+            lwc_copy(value, sizeof value, item->data.string);
+            css_apply_property(s, css_ext_props[i], value);
+        }
+        css_select_results_destroy(r);
+    }
+    style_finish(s);
 }
 
 void css_elem_release(struct css_elem *e) {

@@ -272,9 +272,10 @@ static void console_event(int fd, uint32_t events, void *data) {
 static void render_frame(void) {
     struct backend *b = srv.backend;
     struct canvas c = { b->shadow, b->width, b->height, b->width, { 0, 0, b->width, b->height } };
-    wm_render(&c);
-    frame_callbacks_collect();
     srv.dirty = false;
+    wm_render(&c);
+    if (anim_frame_done()) srv.dirty = true;   /* a transition is running: draw the next frame too */
+    frame_callbacks_collect();
     srv.frame_pending = true;
     b->present(b);
 }

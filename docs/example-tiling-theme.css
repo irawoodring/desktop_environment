@@ -1,0 +1,65 @@
+/* example-tiling-theme.css — a tiling desktop on a wallpaper.
+ * Run: pane -c docs/example-tiling-theme.css
+ * Shows: url() backgrounds, tiling with gaps, per-side borders, per-corner radii,
+ * outline fonts, radial gradients and transitions. Right-click a title bar (or Alt+Space)
+ * and choose "float" to take a window out of the tiling. */
+
+:root { --accent: #ff9e64; --bar: #1f2335; }
+
+desktop {
+  background: url(example-wallpaper.png) center / cover no-repeat #1a1b26;
+  window-layout: tile;          /* try: columns, rows, grid, monocle, floating */
+  tile-ratio: 0.6;
+  gap: 12px;
+  padding: 12px;
+}
+
+window {
+  border: 1px solid #2f334d;
+  border-top: 3px solid #3b4261;
+  border-radius: 12px 12px 4px 4px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  font-family: "DejaVu Sans", "Liberation Sans", sans-serif;
+  font-size: 13px;
+  color: #8a8fa8;
+  transition: border-color 300ms ease, box-shadow 300ms;
+}
+window:focused { border-top-color: var(--accent); box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6); }
+
+titlebar {
+  height: 28px;
+  padding: 0 10px;
+  background: radial-gradient(ellipse at 50% 0%, #3b4261, var(--bar) 80%);
+}
+title { text-align: left; font-weight: bold; }
+window:focused title { color: #e0e0f0; }
+
+button {
+  width: 12px; height: 12px; margin: 0 4px;
+  border-radius: 50%;
+  background: #565f89;
+  color: transparent;
+  transition: background 200ms, color 200ms;
+}
+button:hover { color: rgba(0, 0, 0, 0.6); }
+button.close:hover { background: #f7768e; }
+button.maximize:hover { background: #9ece6a; }
+button.minimize:hover { background: #e0af68; }
+
+window.float { tile: no; border-radius: 12px; }
+window.sidebar titlebar { side: left; width: 28px; padding: 8px 0; }
+window.sidebar button { margin: 4px 0; }
+window.bare titlebar { display: none; }
+
+popup { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); border-radius: 6px; }
+
+menu {
+  background: #1f2335; color: #c0caf5; border: 1px solid #3b4261; border-radius: 8px;
+  padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  font-family: "DejaVu Sans", sans-serif; font-size: 13px;
+}
+menuitem { height: 24px; padding: 0 12px 0 6px; border-radius: 4px; transition: background 120ms; }
+menuitem:hover { background: #3d59a1; color: white; }
+menuitem.checked { color: var(--accent); }
+separator { height: 1px; margin: 4px 8px; background: #3b4261; }
+heading { height: 22px; padding: 0 8px; color: #565f89; }
