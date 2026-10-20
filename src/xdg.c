@@ -17,7 +17,8 @@ enum { WM_ERR_ROLE = 0, WM_ERR_INVALID_POPUP_PARENT = 3, WM_ERR_INVALID_SURFACE_
        WM_ERR_INVALID_POSITIONER = 5 };
 enum { XS_ERR_NOT_CONSTRUCTED = 1, XS_ERR_ALREADY_CONSTRUCTED = 2, XS_ERR_UNCONFIGURED_BUFFER = 3,
        XS_ERR_INVALID_SIZE = 5 };
-enum { STATE_MAXIMIZED = 1, STATE_FULLSCREEN = 2, STATE_RESIZING = 3, STATE_ACTIVATED = 4 };
+enum { STATE_MAXIMIZED = 1, STATE_FULLSCREEN = 2, STATE_RESIZING = 3, STATE_ACTIVATED = 4,
+       STATE_TILED_LEFT = 5, STATE_TILED_RIGHT = 6, STATE_TILED_TOP = 7, STATE_TILED_BOTTOM = 8 };
 
 static const struct iface xdg_toplevel_iface, xdg_popup_iface, xdg_surface_iface,
     xdg_positioner_iface;
@@ -38,8 +39,14 @@ static void send_xdg_configure(struct xdg_surface *x) {
 
 void toplevel_send_configure(struct toplevel *t, int w, int h) {
     if (!t->xdg) return;
-    uint32_t states[4];
+    uint32_t states[8];
     int n = 0;
+    if (t->tiled && t->obj->version >= 2) {   /* tiled: clients drop their shadows and rounded corners */
+        states[n++] = STATE_TILED_LEFT;
+        states[n++] = STATE_TILED_RIGHT;
+        states[n++] = STATE_TILED_TOP;
+        states[n++] = STATE_TILED_BOTTOM;
+    }
     if (t->maximized) states[n++] = STATE_MAXIMIZED;
     if (t->fullscreen) states[n++] = STATE_FULLSCREEN;
     if (t->resizing) states[n++] = STATE_RESIZING;
@@ -195,7 +202,7 @@ static void toplevel_dispatch(struct object *o, uint16_t op, union wire_arg *a) 
         snprintf(t->app_id, sizeof t->app_id, "%s", a[0].s);
         wm_toplevel_title_changed(t);
         break;
-    case 4: break;   /* show_window_menu: no window menu (yet) */
+    case 4: wm_show_window_menu(t, a[2].i, a[3].i); break;   /* show_window_menu(seat, serial, x, y) */
     case 5: wm_toplevel_request(t, REQ_MOVE, 0); break;
     case 6: wm_toplevel_request(t, REQ_RESIZE, a[2].u); break;
     case 7: t->max_w = a[0].i; t->max_h = a[1].i; break;

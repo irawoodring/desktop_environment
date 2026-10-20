@@ -8,6 +8,9 @@
  *   xdg.c         xdg_wm_base: windows (toplevels), popups, positioners, decorations
  *   seat.c        wl_seat, wl_pointer, wl_keyboard (xkbcommon), clipboard (wl_data_device)
  *   wm.c          window management: stacking, focus, input routing, move/resize, drawing
+ *   menu.c        the window menu (actions, and toggling CSS classes on a window)
+ *   anim.c        CSS transitions
+ *   image.c       PNG decoding and scaling, for background images
  *   input.c       reading /dev/input/event* (evdev)
  *   render.c      software rasterizer: boxes, gradients, shadows, text, image blits
  *   css.c         the CSS engine that styles everything the server draws
@@ -141,7 +144,7 @@ struct surface_state {
     int32_t scale;
 };
 
-enum surface_role { ROLE_NONE, ROLE_XDG, ROLE_SUBSURFACE, ROLE_CURSOR };
+enum surface_role { ROLE_NONE, ROLE_XDG, ROLE_SUBSURFACE, ROLE_CURSOR, ROLE_DND_ICON };
 
 struct snode { struct list link; struct surface *surface; };
 
@@ -235,6 +238,12 @@ struct toplevel {
     int resize_anchor_x, resize_anchor_y;   /* the corner that must stay put */
     struct toplevel *parent;
     int conf_w, conf_h;            /* size in the last configure we sent */
+    char classes[256];             /* CSS classes, space-separated (set from the window menu) */
+    struct list tile_link;         /* wm tiling order (mapping order; dragging can swap) */
+    bool tiled;                    /* placed by a tiling layout right now */
+    bool lifted;                   /* a tiled window being dragged out of its slot */
+    bool float_saved;              /* float_geom holds where it was before tiling */
+    struct rect float_geom;
 };
 
 struct popup {
@@ -267,12 +276,17 @@ void seat_pointer_button(uint32_t button, bool pressed);
 void seat_pointer_axis(int axis, double value, int discrete);
 void seat_keyboard_focus(struct surface *s);
 /* returns true if the server swallowed the key (a keybinding) */
-bool seat_keyboard_key(uint32_t key, bool pressed);
+bool seat_keyboard_key(uint32_t key, bool pressed, bool swallow);   /* swallow: never deliver */
 uint32_t seat_modifiers(void);           /* MOD_* bits below */
 void seat_surface_destroyed(struct surface *s);
 void seat_client_destroyed(struct client *c);
 struct surface *seat_pointer_focus(void);
 struct surface *seat_keyboard_focus_surface(void);
+bool seat_drag_active(void);
+struct surface *seat_drag_icon(void);
+void seat_drag_motion(struct surface *s, double sx, double sy);   /* s = surface under the pointer */
+void seat_drag_drop(void);
+void seat_drag_cancel(void);
 
 enum { MOD_SHIFT = 1, MOD_CTRL = 2, MOD_ALT = 4, MOD_SUPER = 8 };
 
@@ -290,12 +304,16 @@ void wm_toplevel_destroy(struct toplevel *t);
 void wm_toplevel_committed(struct toplevel *t);
 void wm_toplevel_request(struct toplevel *t, int what, uint32_t arg);
 void wm_toplevel_title_changed(struct toplevel *t);
+void wm_show_window_menu(struct toplevel *t, int x, int y);   /* x, y relative to the window */
 void wm_popup_map(struct popup *p);
 void wm_popup_unmap(struct popup *p);
 void wm_popup_grab(struct popup *p);
 void wm_surface_destroyed(struct surface *s);
 void wm_cursor_changed(void);
 void wm_set_cursor(struct surface *s, int hot_x, int hot_y);
+bool wm_start_drag(struct client *c);   /* may client c start a drag now? if so, grab the pointer */
+void wm_drag_started(void);
+void wm_drag_ended(void);
 void wm_xdg_surface_destroyed(struct xdg_surface *x);
 struct rect wm_maximized_content(struct toplevel *t);
 void wm_popup_new(struct popup *p);
@@ -316,6 +334,33 @@ void wm_action_cycle(void);
 void wm_action_close(void);
 void wm_action_maximize(void);
 void wm_action_terminal(void);
+void wm_action_window_menu(void);
+
+/* what the window menu can do to a window */
+void wm_window_minimize(struct toplevel *t);
+void wm_window_maximize(struct toplevel *t, bool on);
+void wm_window_fullscreen(struct toplevel *t, bool on);
+void wm_window_toggle_class(struct toplevel *t, const char *cls);
+bool wm_window_has_class(struct toplevel *t, const char *cls);
+void wm_menu_closed(void);
+
+/* ====================================================================== anim.c */
+struct style;
+/* Turn a freshly computed target style into what to show now, mid-transition if needed.
+ * owner + part identify the element across frames (e.g. a toplevel and "its title bar"). */
+void anim_style(const void *owner, int part, struct style *s);
+void anim_forget(const void *owner);
+bool anim_frame_done(void);   /* after drawing: is something still animating? */
+
+/* ====================================================================== menu.c */
+void menu_open(struct toplevel *t, int x, int y, bool keyboard);
+void menu_close(void);
+void menu_forget(struct toplevel *t);
+bool menu_is_open(void);
+void menu_motion(double x, double y);
+void menu_button(uint32_t button, bool pressed, double x, double y);
+void menu_key(uint32_t key, bool pressed);
+void menu_draw(struct canvas *c);
 
 /* ===================================================================== input.c */
 int input_init(void);

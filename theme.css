@@ -1,18 +1,28 @@
 /* theme.css — the look of pane. Edit and save: the server reloads it instantly.
  *
  * Elements you can style:
- *   desktop                       the background
- *   window                        frame: border, radius, shadow, opacity
- *     titlebar                    height, background, padding
+ *   desktop                       background (colors, gradients, url() images), padding,
+ *                                 and the layout: window-layout, gap, tile-ratio
+ *   window                        frame: border, radius, shadow, opacity, tile
+ *   window.<class>                any class you style here can be toggled on a window from
+ *                                 its window menu (right-click the title bar, or Alt+Space)
+ *     titlebar                    height (width on the side), background, padding,
+ *                                 side: top|right|bottom|left, display: none
  *       title                     color, font-family, font-size, text-align
  *       button.close / .maximize / .minimize    width, height, margin, background,
  *                                 border-radius, color (icon), display, float
- *   popup                         menus: box-shadow, border
+ *   popup                         apps' own menus: box-shadow, border
+ *   menu                          the window menu: background, border, padding, shadow
+ *     menuitem                    entries (:hover; .checked for active classes,
+ *                                 .close/.minimize/... for the actions)
+ *     separator, heading
  *   cursor                        color (fill), border-color (outline), height (scale)
  *
  * States: window:focused :maximized :fullscreen :hover, button:hover :active
  * Match apps: window[app-id="foot"], window[title*="Firefox"]
- * Fonts are console (PSF) fonts by name, from /usr/share/consolefonts. */
+ * Fonts: any installed TrueType/OpenType family (with FreeType), or a console (PSF) font
+ * by name from /usr/share/consolefonts. List several; the first one found is used.
+ * Transitions: transition: <property> <duration> [easing] [delay], ... */
 
 :root {
   --accent: #7aa2f7;
@@ -24,15 +34,23 @@
 
 desktop {
   background: linear-gradient(160deg, #24283b 0%, #1a1b26 55%, #16161e 100%);
+  /* a wallpaper instead (PNG; relative paths are relative to this file):
+  background: url(~/wallpaper.png) center / cover no-repeat #1a1b26; */
+
+  /* let pane place the windows: floating | tile | columns | rows | grid | monocle */
+  window-layout: floating;
+  gap: 10px;
+  padding: 10px;
 }
 
 window {
   border: 1px solid #2f334d;
   border-radius: 10px;
   box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
-  font-family: "Lat2-Terminus16";
-  font-size: 16px;
+  font-family: "DejaVu Sans", "Lat2-Terminus16";
+  font-size: 13px;
   color: var(--text-dim);
+  transition: border-color 200ms, box-shadow 250ms ease-out;
 }
 
 window:focused {
@@ -59,6 +77,7 @@ window:focused titlebar {
 title {
   text-align: center;
   padding: 0 8px;
+  font-weight: bold;
 }
 
 window:focused title {
@@ -74,6 +93,7 @@ button {
   border-radius: 50%;
   background: #414868;
   color: transparent;
+  transition: background 150ms, color 150ms;
 }
 
 window:focused button.close    { background: #f7768e; }
@@ -90,4 +110,74 @@ popup {
 cursor {
   color: white;
   border-color: black;
+}
+
+/* ---- window classes: toggle these per window from the window menu ---- */
+
+window.work titlebar,
+window.work:focused titlebar {
+  background: linear-gradient(to bottom, #2d4a3e, #213a30);
+}
+window.work:focused { border-color: #9ece6a; }
+
+window.personal titlebar,
+window.personal:focused titlebar {
+  background: linear-gradient(to bottom, #4a2d4a, #3a2140);
+}
+window.personal:focused { border-color: #bb9af7; }
+
+window.urgent {
+  border-color: #f7768e;
+  box-shadow: 0 0 24px rgba(247, 118, 142, 0.7);
+}
+
+window.dim { opacity: 0.7; }
+
+/* keep this window out of tiling layouts */
+window.float { tile: no; }
+
+/* title bar down the left side */
+window.sidebar titlebar { side: left; width: 30px; padding: 10px 0; }
+window.sidebar button { margin: 4px 0; }
+
+/* no title bar at all: just a frame (Alt+drag still moves it) */
+window.bare titlebar { display: none; }
+window.bare { border: 2px solid #3b4261; }
+window.bare:focused { border-color: var(--accent); }
+
+/* ---- the window menu ---- */
+
+menu {
+  background: #1f2335;
+  border: 1px solid #3b4261;
+  border-radius: 8px;
+  padding: 5px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  color: var(--text);
+  font-family: "DejaVu Sans", "Lat2-Terminus16";
+  font-size: 13px;
+}
+
+menuitem {
+  height: 26px;
+  padding: 0 12px 0 8px;
+  border-radius: 5px;
+  transition: background 120ms;
+}
+
+menuitem:hover { background: #3d59a1; color: white; }
+menuitem.close:hover { background: #f7768e; color: #1a1b26; }
+menuitem.checked { color: var(--accent); }
+menuitem.checked:hover { color: white; }
+
+separator {
+  height: 1px;
+  margin: 5px 8px;
+  background: #3b4261;
+}
+
+heading {
+  height: 22px;
+  padding: 0 8px;
+  color: var(--text-dim);
 }

@@ -174,16 +174,30 @@ static void load_theme(const char *arg) {
         }
         if (arg && i == 0) fprintf(stderr, "pane: can't read theme %s\n", arg);
     }
+    char tmp[4096];
     if (!theme_path[0]) {
         css_load_string(default_theme, "(built-in theme)");
-        fprintf(stderr, "pane: using the built-in theme\n");
-        return;
+        /* keep watching where the user's theme belongs, so creating it there
+         * takes effect without a restart */
+        int user = arg ? 1 : 0;
+        if (user >= n - 1) {
+            fprintf(stderr, "pane: using the built-in theme\n");
+            return;
+        }
+        snprintf(theme_path, sizeof theme_path, "%s", cand[user]);
+        snprintf(tmp, sizeof tmp, "%s", theme_path);
+        for (char *s = strchr(tmp + 1, '/'); s; s = strchr(s + 1, '/')) {   /* mkdir -p */
+            *s = '\0';
+            mkdir(tmp, 0755);
+            *s = '/';
+        }
+        fprintf(stderr, "pane: using the built-in theme; save one as %s to change it\n", theme_path);
     }
-    /* watch the directory, not the file: editors save by writing a new file and renaming */
+    /* watch the directory, not the file: editors save by writing a new file and
+     * renaming, and the file may not exist yet */
     int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
-    char tmp[4096];
     snprintf(tmp, sizeof tmp, "%s", theme_path);
-    if (fd >= 0 && inotify_add_watch(fd, dirname(tmp), IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE) >= 0)
+    if (fd >= 0 && inotify_add_watch(fd, dirname(tmp), IN_CLOSE_WRITE | IN_MOVED_TO) >= 0)
         watch_add(fd, EPOLLIN, theme_event, NULL);
 }
 
@@ -272,9 +286,10 @@ static void console_event(int fd, uint32_t events, void *data) {
 static void render_frame(void) {
     struct backend *b = srv.backend;
     struct canvas c = { b->shadow, b->width, b->height, b->width, { 0, 0, b->width, b->height } };
-    wm_render(&c);
-    frame_callbacks_collect();
     srv.dirty = false;
+    wm_render(&c);
+    if (anim_frame_done()) srv.dirty = true;   /* a transition is running: draw the next frame too */
+    frame_callbacks_collect();
     srv.frame_pending = true;
     b->present(b);
 }
