@@ -129,7 +129,7 @@ Supported properties:
 | Motion | `transition: <property> <duration> [easing] [delay], ...` with `ease`, `linear`, `ease-in/out`, `cubic-bezier()` |
 | Layout | `display: none`, `float: left\|right` (button placement); on `titlebar`: `side: top\|right\|bottom\|left`; on `desktop`: `window-layout`, `gap`, `tile-ratio`, `padding`; on `window`: `tile: no` |
 
-Selectors and values: type, `.class`, `:state`, `[attr=v]`, `[attr*=v]`, `[attr^=v]`, `[attr$=v]`, descendant and `>` combinators; custom properties (`--accent: #7aa2f7` plus `var(--accent)`); named colors, `#rgb`, `#rrggbbaa`, `rgb()`, `rgba()`, `currentColor`.
+Selectors and values: type, `.class`, `:state`, `[attr=v]`, `[attr*=v]`, `[attr^=v]`, `[attr$=v]`, descendant and `>` combinators; custom properties (`--accent: #7aa2f7` plus `var(--accent)`); named colors, `#rgb`, `#rrggbbaa`, `rgb()`, `rgba()`. A border without a color takes the text color.
 
 ```css
 window[app-id="foot"] titlebar { background: #2d7d46; }   /* per-app colors */
