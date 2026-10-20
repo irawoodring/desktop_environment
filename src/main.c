@@ -12,6 +12,7 @@
 #include "backend.h"
 #include "css.h"
 #include "render.h"
+#include "version.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -309,6 +310,16 @@ static void before_wait(void) {
 
 /* ------------------------------------------------------------------- main */
 
+/* what this pane is: for telling builds apart */
+static void print_version(FILE *f) {
+#ifdef PANE_FREETYPE
+    const char *ft = "yes";
+#else
+    const char *ft = "no";
+#endif
+    fprintf(f, "pane %s (CSS engine: %s, FreeType: %s)\n", pane_commit(), css_engine_name(), ft);
+}
+
 static void usage(void) {
     fprintf(stderr,
             "usage: pane [options]\n"
@@ -318,6 +329,7 @@ static void usage(void) {
             "  -c, --theme FILE                   stylesheet (default ~/.config/pane/theme.css)\n"
             "  -t, --terminal CMD                 command for Super+Enter / Ctrl+Alt+T (default foot)\n"
             "  -s, --startup CMD                  run CMD once the server is up (repeatable)\n"
+            "  -V, --version                      which build this is\n"
             "\n"
             "keys: Ctrl+Alt+Backspace quit, Alt+Tab cycle, Alt+F4 close, Super+Up maximize,\n"
             "      Alt+drag move, Alt+right-drag resize. Set PANE_DEBUG=1 to trace the protocol.\n");
@@ -333,10 +345,11 @@ int main(int argc, char **argv) {
         { "backend", required_argument, 0, 'b' }, { "device", required_argument, 0, 'd' },
         { "size", required_argument, 0, 'S' },    { "theme", required_argument, 0, 'c' },
         { "terminal", required_argument, 0, 't' }, { "startup", required_argument, 0, 's' },
-        { "help", no_argument, 0, 'h' },           { 0, 0, 0, 0 },
+        { "help", no_argument, 0, 'h' },           { "version", no_argument, 0, 'V' },
+        { 0, 0, 0, 0 },
     };
     int o;
-    while ((o = getopt_long(argc, argv, "b:d:S:c:t:s:h", opts, NULL)) != -1) {
+    while ((o = getopt_long(argc, argv, "b:d:S:c:t:s:hV", opts, NULL)) != -1) {
         switch (o) {
         case 'b': backend_name = optarg; break;
         case 'd': device = optarg; break;
@@ -344,9 +357,12 @@ int main(int argc, char **argv) {
         case 'c': theme = optarg; break;
         case 't': srv.terminal = optarg; break;
         case 's': if (nstartup < 16) startup[nstartup++] = optarg; break;
+        case 'V': print_version(stdout); return 0;
         default: usage(); return o == 'h' ? 0 : 1;
         }
     }
+    fprintf(stderr, "pane: ");
+    print_version(stderr);
 
     list_init(&srv.clients);
     list_init(&srv.surfaces);
