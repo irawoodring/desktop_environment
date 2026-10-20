@@ -1,6 +1,6 @@
 # pane
 
-A Wayland display server and desktop written from scratch in C, without libwayland, wlroots, X11 or a GPU stack. It talks to the kernel directly (DRM/KMS for the screen, evdev for input) and speaks the Wayland protocol byte by byte. Existing applications (Qt, KDE, GTK, foot, SDL) run on it unmodified. Everything the server draws is styled with CSS.
+A Wayland display server and desktop written from scratch in C, without libwayland, wlroots, X11 or a GPU stack. It talks to the kernel directly (DRM/KMS for the screen, evdev for input) and speaks the Wayland protocol byte by byte. Existing applications (Qt, KDE, GTK, foot, SDL) should run on it unmodified. Everything the server draws is styled with CSS.
 
 ![pane running Qt, foot and the demo client](docs/default-theme.png)
 
