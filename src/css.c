@@ -202,8 +202,24 @@ struct parser {
     int nraw, capraw;
 };
 
+/* Problems with the theme, kept so pane can show them on screen: its stderr is
+ * usually the console hidden behind the graphics. */
+#define MAX_MESSAGES 24
+static char messages[MAX_MESSAGES][200];
+static int nmessages, nmessages_total;
+static bool said_freetype;
+
+void css_messages_reset(void) { nmessages = nmessages_total = 0; said_freetype = false; }
+int css_message_count(void) { return nmessages_total; }
+const char *css_message(int i) { return i >= 0 && i < nmessages ? messages[i] : NULL; }
+
 static void err(struct parser *ps, int line, const char *msg, const char *what) {
     fprintf(stderr, "%s:%d: %s%s%s\n", ps->file, line, msg, what ? " " : "", what ? what : "");
+    const char *base = strrchr(ps->file, '/');
+    if (nmessages < MAX_MESSAGES)
+        snprintf(messages[nmessages++], sizeof messages[0], "%s:%d: %s%s%s", base ? base + 1 : ps->file, line,
+                 msg, what ? " " : "", what ? what : "");
+    nmessages_total++;
     ps->errors++;
 }
 
@@ -679,12 +695,13 @@ static bool parse_border_width(struct vcur *v, int *out) {
     return parse_length(v, out);
 }
 
-static bool border_style_ident(struct tok *k, bool *drawn) {
-    static const char *const styles[] = { "solid", "dashed", "dotted", "double", "groove", "ridge",
+/* a border-style keyword, as enum border_style */
+static bool border_style_ident(struct tok *k, int *style) {
+    static const char *const styles[] = { "none", "solid", "dashed", "dotted", "double", "groove", "ridge",
                                           "inset", "outset" };
-    if (ident_is(k, "none") || ident_is(k, "hidden")) { *drawn = false; return true; }
+    if (ident_is(k, "hidden")) { *style = BORDER_NONE; return true; }
     for (size_t i = 0; i < ARRAY_LEN(styles); i++)
-        if (ident_is(k, styles[i])) { *drawn = true; return true; }   /* all drawn solid */
+        if (ident_is(k, styles[i])) { *style = (int)i; return true; }
     return false;
 }
 
@@ -861,13 +878,12 @@ static bool parse_decl(struct parser *ps, const char *name, struct vcur *v, stru
         ADD(.prop = P_COLOR, .v.color = c);
     } else if (!strcmp(name, "border") || (!strncmp(name, "border-", 7) && side_index(name + 7) >= 0)) {
         /* border / border-<side>: <width> || <style> || <color>; unset parts reset */
-        int w = 3;
-        bool drawn = false;
+        int w = 3, bstyle = BORDER_NONE;
         struct paint col = { .kind = PAINT_NONE };   /* none = currentColor */
         while ((k = peek(v))) {
             if (k->t == T_NUM || ident_is(k, "thin") || ident_is(k, "medium") || ident_is(k, "thick")) {
                 if (!parse_border_width(v, &w)) goto bad;
-            } else if (border_style_ident(k, &drawn)) {
+            } else if (border_style_ident(k, &bstyle)) {
                 v->i++;
             } else {
                 col.kind = PAINT_COLOR;
@@ -878,7 +894,7 @@ static bool parse_decl(struct parser *ps, const char *name, struct vcur *v, stru
         for (int s = 0; s < 4; s++) {
             if (only >= 0 && s != only) continue;
             ADD(.prop = P_BORDER_WIDTH, .idx = s, .v.len = w);
-            ADD(.prop = P_BORDER_STYLE, .idx = s, .v.flag = drawn);
+            ADD(.prop = P_BORDER_STYLE, .idx = s, .v.len = bstyle);
             ADD(.prop = P_BORDER_COLOR, .idx = s, .v.paint = col);
         }
     } else if (!strcmp(name, "border-width") || !strcmp(name, "border-style") || !strcmp(name, "border-color")) {
@@ -888,7 +904,7 @@ static bool parse_decl(struct parser *ps, const char *name, struct vcur *v, stru
         while (!at_end(v) && n < 4) {
             vals[n] = (struct decl){ 0 };
             if (kind == 'w') { if (!parse_border_width(v, &vals[n].v.len)) goto bad; }
-            else if (kind == 's') { if (!border_style_ident(peek(v), &vals[n].v.flag)) goto bad; v->i++; }
+            else if (kind == 's') { if (!border_style_ident(peek(v), &vals[n].v.len)) goto bad; v->i++; }
             else { vals[n].v.paint.kind = PAINT_COLOR; if (!parse_color(v, &vals[n].v.paint.color)) goto bad; }
             n++;
         }
@@ -906,7 +922,7 @@ static bool parse_decl(struct parser *ps, const char *name, struct vcur *v, stru
         const char *what = strrchr(name, '-') + 1;
         struct decl x = { .idx = s };
         if (*what == 'w') { x.prop = P_BORDER_WIDTH; if (!parse_border_width(v, &x.v.len)) goto bad; }
-        else if (*what == 's') { x.prop = P_BORDER_STYLE; if (!border_style_ident(peek(v), &x.v.flag)) goto bad; v->i++; }
+        else if (*what == 's') { x.prop = P_BORDER_STYLE; if (!border_style_ident(peek(v), &x.v.len)) goto bad; v->i++; }
         else { x.prop = P_BORDER_COLOR; x.v.paint.kind = PAINT_COLOR; if (!parse_color(v, &x.v.paint.color)) goto bad; }
         ADD_DECL(x);
     } else if (!strcmp(name, "border-radius")) {
@@ -915,7 +931,10 @@ static bool parse_decl(struct parser *ps, const char *name, struct vcur *v, stru
         while (n < 4 && (k = peek(v)) && k->t == T_NUM)
             if (!parse_length_pct(v, &vals[n++])) goto bad;
         if (n == 0) goto bad;
-        while ((k = peek(v))) v->i++;   /* an elliptical "/ ..." part is ignored */
+        if (peek(v)) {
+            err(ps, line, "elliptical corners (\"/ ...\") aren't supported; using the first radii in", name);
+            while (peek(v)) v->i++;
+        }
         static const int corner_map[5][4] = { { 0 }, { 0, 0, 0, 0 }, { 0, 1, 0, 1 }, { 0, 1, 2, 1 }, { 0, 1, 2, 3 } };
         for (int c = 0; c < 4; c++) ADD(.prop = P_RADIUS, .idx = c, .v.l = vals[corner_map[n][c]]);
     } else if (!strncmp(name, "border-", 7) && strstr(name, "-radius")) {
@@ -955,7 +974,10 @@ static bool parse_decl(struct parser *ps, const char *name, struct vcur *v, stru
                 else if (!parse_color(v, &c)) goto bad;
             }
             if (n < 2) goto bad;
-            while (!at_end(v)) v->i++;   /* only the first shadow of a list is used */
+            if (!at_end(v)) {
+                err(ps, line, "only the first of several shadows is drawn in", name);
+                while (!at_end(v)) v->i++;
+            }
             x.v.shadow.on = true;
             x.v.shadow.x = lens[0];
             x.v.shadow.y = lens[1];
@@ -1363,6 +1385,115 @@ const char css_base_sheet[] =
 /* Parse a whole sheet. With `out`, build the built-in engine's rules (and report every
  * problem). With `rewrite`, produce libcss-ready CSS instead, and only check the values
  * libcss can't check for us. */
+/* ------------------------------------------------ what applies where */
+
+/* Which properties each element actually uses, so a theme setting one that does
+ * nothing there hears about it instead of silently seeing no change. Text
+ * properties count on elements whose children inherit them. */
+enum { A_BG = 1 << 0, A_BORDER = 1 << 1, A_RADIUS = 1 << 2, A_SHADOW = 1 << 3, A_OPACITY = 1 << 4,
+       A_PADDING = 1 << 5, A_MARGIN = 1 << 6, A_WIDTH = 1 << 7, A_HEIGHT = 1 << 8, A_DISPLAY = 1 << 9,
+       A_FLOAT = 1 << 10, A_TRANSITION = 1 << 11, A_COLOR = 1 << 12, A_FONT = 1 << 13, A_ALIGN = 1 << 14,
+       A_SIDE = 1 << 15, A_LAYOUT = 1 << 16, A_TILE = 1 << 17 };
+#define A_BOX (A_BG | A_BORDER | A_RADIUS | A_SHADOW | A_OPACITY | A_TRANSITION)
+
+static const struct { const char *name; unsigned props; const char *why; } elements[] = {
+    { "window", A_BOX | A_TILE | A_COLOR | A_FONT | A_ALIGN, "(the app decides its window's size and contents)" },
+    { "titlebar", A_BOX | A_PADDING | A_WIDTH | A_HEIGHT | A_DISPLAY | A_SIDE | A_COLOR | A_FONT | A_ALIGN, NULL },
+    { "title", A_BOX | A_PADDING | A_DISPLAY | A_COLOR | A_FONT | A_ALIGN, NULL },
+    { "button", A_BOX | A_MARGIN | A_WIDTH | A_HEIGHT | A_DISPLAY | A_FLOAT | A_COLOR, NULL },
+    { "desktop", A_BG | A_PADDING | A_LAYOUT, NULL },
+    { "popup", A_BORDER | A_RADIUS | A_SHADOW | A_OPACITY | A_TRANSITION, "(the app draws its menus' contents)" },
+    { "cursor", A_COLOR | A_BORDER | A_HEIGHT, "(color fills it, border-color outlines it, height scales it)" },
+    { "menu", A_BOX | A_PADDING | A_WIDTH | A_COLOR | A_FONT, NULL },
+    { "menuitem", A_BOX | A_PADDING | A_HEIGHT | A_DISPLAY | A_COLOR | A_FONT, NULL },
+    { "heading", A_BOX | A_PADDING | A_HEIGHT | A_DISPLAY | A_COLOR | A_FONT, NULL },
+    { "separator", A_BOX | A_MARGIN | A_HEIGHT | A_DISPLAY, NULL },
+};
+
+static unsigned prop_group(const char *n) {
+    if (!strncmp(n, "background", 10)) return A_BG;
+    if (strstr(n, "radius")) return A_RADIUS;
+    if (!strncmp(n, "border", 6)) return A_BORDER;
+    if (!strcmp(n, "box-shadow")) return A_SHADOW;
+    if (!strcmp(n, "opacity")) return A_OPACITY;
+    if (!strncmp(n, "padding", 7)) return A_PADDING;
+    if (!strncmp(n, "margin", 6)) return A_MARGIN;
+    if (!strcmp(n, "width")) return A_WIDTH;
+    if (!strcmp(n, "height")) return A_HEIGHT;
+    if (!strcmp(n, "display")) return A_DISPLAY;
+    if (!strcmp(n, "float")) return A_FLOAT;
+    if (!strncmp(n, "transition", 10)) return A_TRANSITION;
+    if (!strcmp(n, "color")) return A_COLOR;
+    if (!strncmp(n, "font", 4)) return A_FONT;
+    if (!strcmp(n, "text-align")) return A_ALIGN;
+    if (!strcmp(n, "side")) return A_SIDE;
+    if (!strcmp(n, "window-layout") || !strcmp(n, "gap") || !strcmp(n, "tile-ratio")) return A_LAYOUT;
+    if (!strcmp(n, "tile")) return A_TILE;
+    return 0;   /* not a property pane knows: parse_decl says so */
+}
+
+static int element_index(const char *name) {
+    for (size_t i = 0; i < ARRAY_LEN(elements); i++) if (!strcmp(elements[i].name, name)) return (int)i;
+    return -1;
+}
+
+/* The elements a rule styles: each selector's last compound's type name. -1 in
+ * `out` for a selector that doesn't name one (".work", "*", ":hover"). Reports
+ * type names pane has no element for. */
+static int rule_subjects(struct parser *ps, const struct tok *t, int start, int end, int *out, int max) {
+    int n = 0, s = start, depth = 0;
+    for (int j = start; j <= end && n < max; j++) {
+        if (j < end) {
+            if (t[j].t == T_FUNC || t[j].t == T_LPAREN) depth++;
+            if (t[j].t == T_RPAREN && depth > 0) depth--;
+            if (depth > 0 || t[j].t != T_COMMA) continue;
+        }
+        /* one selector: t[s..j), without the spaces around it */
+        int e = j;
+        while (e > s && t[e - 1].t == T_WS) e--;
+        int compound = s, d = 0;
+        for (int i = s; i < e; i++) {
+            if (t[i].t == T_FUNC || t[i].t == T_LPAREN) d++;
+            if (t[i].t == T_RPAREN && d > 0) d--;
+            if (d == 0 && (t[i].t == T_WS || (t[i].t == T_DELIM && t[i].s[0] == '>'))) compound = i + 1;
+        }
+        while (compound < e && t[compound].t == T_WS) compound++;
+        int el = -1;
+        if (compound < e && t[compound].t == T_IDENT) {
+            el = element_index(t[compound].s);
+            if (el < 0) {
+                err(ps, t[compound].line, "pane has no element called", t[compound].s);
+                el = -2;   /* reported: don't also check its properties */
+            }
+        }
+        out[n++] = el;
+        s = j + 1;
+    }
+    return n;
+}
+
+/* Report a declaration that does nothing on any element its rule styles. */
+static void check_applies(struct parser *ps, const char *name, int line, const int *subj, int nsubj) {
+    unsigned g = prop_group(name);
+    if (!g) return;
+#ifndef PANE_FREETYPE
+    if (g == A_FONT && strcmp(name, "font-family") && !said_freetype) {
+        err(ps, line, "pane was built without FreeType, so console font sizes only change in whole multiples:",
+            name);
+        said_freetype = true;
+    }
+#endif
+    for (int i = 0; i < nsubj; i++) {
+        if (subj[i] < 0 || (elements[subj[i]].props & g)) continue;
+        char what[160];
+        snprintf(what, sizeof what, "%s%s%s", elements[subj[i]].name, elements[subj[i]].why ? " " : "",
+                 elements[subj[i]].why ? elements[subj[i]].why : "");
+        char msg[64];
+        snprintf(msg, sizeof msg, "%s has no effect on", name);
+        err(ps, line, msg, what);
+    }
+}
+
 static int parse_sheet(const char *text, const char *file, struct sheet *out, struct rewrite *rewrite) {
     struct toks ts = { 0 };
     tokenize(text, &ts);
@@ -1414,6 +1545,7 @@ static int parse_sheet(const char *text, const char *file, struct sheet *out, st
 
     int d = 0;
     for (int r = 0; r < sh.nrules; r++) {
+        int subj[16], nsubj = rule_subjects(&ps, t, pre_start[r], pre_end[r], subj, 16);
         struct strbuf sel = { 0 };
         if (rewrite) {
             sb_puts(&sel, "");
@@ -1430,13 +1562,14 @@ static int parse_sheet(const char *text, const char *file, struct sheet *out, st
                 int line = expanded.n ? expanded.v[0].line : 0;
                 if (out) {
                     parse_decl(&ps, rd->name, &v, &sh.rules[r], line);
-                } else if (ext_index(rd->name) >= 0 || !strcmp(rd->name, "border-radius") ||
-                           !strncmp(rd->name, "background", 10)) {
-                    /* libcss reports nothing about these, so check them ourselves */
+                } else {
+                    /* libcss silently drops what it doesn't like, and accepts properties
+                     * pane doesn't draw: check everything with pane's own parser */
                     struct rule scratch = { 0 };
                     parse_decl(&ps, rd->name, &v, &scratch, line);
                     free(scratch.decls);
                 }
+                check_applies(&ps, rd->name, line, subj, nsubj);
                 if (rewrite) emit_decl(rewrite, sel.s, rd->name, &expanded, rd->important);
             }
             free(expanded.v);
@@ -1503,7 +1636,7 @@ static void apply_decl(struct style *s, const struct decl *d) {
     case P_BG_REPEAT: s->bg_repeat_x = d->v.repeat.x; s->bg_repeat_y = d->v.repeat.y; break;
     case P_COLOR: s->color = d->v.color; break;
     case P_BORDER_WIDTH: s->border.w[d->idx] = MAX(d->v.len, 0); break;
-    case P_BORDER_STYLE: s->border_drawn[d->idx] = d->v.flag; break;
+    case P_BORDER_STYLE: s->border.style[d->idx] = (uint8_t)d->v.len; break;
     case P_BORDER_COLOR:
         s->border_color_set[d->idx] = d->v.paint.kind == PAINT_COLOR;
         s->border.c[d->idx] = d->v.paint.color;
@@ -1563,8 +1696,27 @@ struct radii style_radii(const struct style *s, int w, int h) {
 
 struct border style_border(const struct style *s) {
     struct border b = s->border;
-    for (int i = 0; i < 4; i++) if (!s->border_drawn[i]) b.w[i] = 0;
+    for (int i = 0; i < 4; i++) if (b.style[i] == BORDER_NONE) b.w[i] = 0;
     return b;
+}
+
+bool style_has_radius(const struct style *s) {
+    for (int i = 0; i < 4; i++) if (s->radius[i].v > 0) return true;
+    return false;
+}
+
+void style_draw_box(struct canvas *c, struct rect r, struct radii rad, const struct style *s, float opacity) {
+    if (s->hidden || opacity <= 0 || r.w <= 0 || r.h <= 0) return;
+    if (s->shadow) {
+        int sp = s->shadow_spread;
+        struct rect sr = { r.x + s->shadow_x - sp, r.y + s->shadow_y - sp, r.w + 2 * sp, r.h + 2 * sp };
+        struct radii srad = { rad.tl + sp, rad.tr + sp, rad.br + sp, rad.bl + sp };
+        draw_shadow(c, sr, srad, s->shadow_blur, s->shadow_color, opacity, NULL);
+    }
+    struct border b = style_border(s);
+    struct paint layers[2];
+    int n = style_layers(s, layers);
+    draw_box(c, r, rad, &b, layers, n, opacity, NULL);
 }
 
 int style_layers(const struct style *s, struct paint out[2]) {
@@ -1613,6 +1765,7 @@ int css_load_file(const char *path) {
     text[n] = '\0';
     fclose(f);
     struct sheet sh;
+    css_messages_reset();
     css_window_classes_reset();
     css_set_base_dir(path);
     image_cache_clear();   /* pick up edited images too */
@@ -1626,6 +1779,7 @@ int css_load_file(const char *path) {
 
 void css_load_string(const char *text, const char *name) {
     struct sheet sh;
+    css_messages_reset();
     css_window_classes_reset();
     parse_sheet(text, name, &sh, NULL);
     activate(&sh);

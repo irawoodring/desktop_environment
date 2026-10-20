@@ -123,7 +123,9 @@ static void layout(struct style *ms, struct style *is) {
     int inner_w = 0, h = 0, heights[MAX_ITEMS];
     for (int i = 0; i < m.n; i++) {
         const struct style *s = &is[i];
-        if (m.items[i].kind == ITEM_SEPARATOR) {
+        if (s->hidden) {   /* display: none */
+            heights[i] = 0;
+        } else if (m.items[i].kind == ITEM_SEPARATOR) {
             heights[i] = (s->height >= 0 ? s->height : 1) + s->margin[0] + s->margin[2];
         } else {
             int th = text_height(s);
@@ -183,24 +185,23 @@ void menu_draw(struct canvas *c) {
         const struct item *it = &m.items[i];
         struct style *s = &is[i];
         struct rect r = it->r;
+        float iop = op * s->opacity;   /* opacity multiplies the menu's, as in CSS */
         if (it->kind == ITEM_SEPARATOR) {
             struct rect line = { r.x + s->margin[3], r.y + s->margin[0], r.w - s->margin[1] - s->margin[3],
                                  s->height >= 0 ? s->height : 1 };
-            n = style_layers(s, layers);
-            draw_box(c, line, (struct radii){ 0 }, NULL, layers, n, op, NULL);
+            style_draw_box(c, line, style_radii(s, line.w, line.h), s, iop);
             continue;
         }
-        struct border sb = style_border(s);
-        n = style_layers(s, layers);
-        draw_box(c, r, style_radii(s, r.w, r.h), &sb, layers, n, op, NULL);
+        if (s->hidden) continue;
+        style_draw_box(c, r, style_radii(s, r.w, r.h), s, iop);
         const struct font *f = font_of(s);
         int th = text_height(s);
         int tx = r.x + s->padding[3], ty = r.y + (r.h - th) / 2;
         if (it->kind != ITEM_HEADING) {
-            if (it->checked) draw_icon(c, (struct rect){ tx, ty, th, th }, ICON_CHECK, s->color, op);
+            if (it->checked) draw_icon(c, (struct rect){ tx, ty, th, th }, ICON_CHECK, s->color, iop);
             tx += th + 6;
         }
-        draw_text(c, f, tx, ty, it->label, s->color, op, r.x + r.w - s->padding[1] - tx, 0);
+        draw_text(c, f, tx, ty, it->label, s->color, iop, r.x + r.w - s->padding[1] - tx, 0);
     }
 }
 

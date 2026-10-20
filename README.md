@@ -123,11 +123,33 @@ Supported properties:
 
 | Area | Properties |
 |---|---|
-| Boxes | `background` / `background-color` / `background-image` (colors, `linear-gradient()`, `radial-gradient()`, `url(file.png)`, several layers), `background-size` (`cover`, `contain`, lengths), `background-position`, `background-repeat`, `opacity`, `padding`, `margin`, `width`, `height` |
-| Borders | `border` and every per-side longhand (`border-top`, `border-left-color`, ...), `border-radius` with per-corner values (`12px 12px 4px 4px`, `border-top-left-radius`, px or %), `box-shadow` |
+| Boxes | `background` / `background-color` / `background-image` (colors, `linear-gradient()`, `radial-gradient()`, `url(file.png)`, several layers), `background-size` (`cover`, `contain`, lengths), `background-position`, `background-repeat`, `opacity` (multiplies the parent's, as in CSS), `padding`, `margin`, `width`, `height` |
+| Borders | `border` and every per-side longhand (`border-top`, `border-left-color`, ...); every `border-style`: `solid`, `dashed`, `dotted`, `double`, `groove`, `ridge`, `inset`, `outset`, `none`; `border-radius` with per-corner values (`12px 12px 4px 4px`, `border-top-left-radius`, px or %); `box-shadow` |
 | Text | `color`, `font-family` (a list, with generic `sans-serif`/`serif`/`monospace`), `font-size`, `font-weight`, `font-style`, `text-align` |
 | Motion | `transition: <property> <duration> [easing] [delay], ...` with `ease`, `linear`, `ease-in/out`, `cubic-bezier()` |
 | Layout | `display: none`, `float: left\|right` (button placement); on `titlebar`: `side: top\|right\|bottom\|left`; on `desktop`: `window-layout`, `gap`, `tile-ratio`, `padding`; on `window`: `tile: no` |
+
+Not every property means something on every element. A window's size and contents
+are the app's, for instance, so `width` on `window` does nothing. What each element uses:
+
+| Element | Box (background, border, border-radius, box-shadow, opacity, transition) | Also |
+|---|---|---|
+| `window` | yes | `tile`; text properties, inherited by the title |
+| `titlebar` | yes | `height` (or `width` when on the side), `padding`, `side`, `display`; text properties |
+| `title` | yes | `padding`, `display`, `color`, fonts, `text-align` |
+| `button` | yes | `width`, `height`, `margin`, `display`, `float`, `color` (the icon) |
+| `desktop` | background only | `padding`, `window-layout`, `gap`, `tile-ratio` |
+| `popup` | border, border-radius, box-shadow, opacity | (the app draws the rest) |
+| `menu` | yes | `padding`, `width`, `color`, fonts |
+| `menuitem`, `heading` | yes | `padding`, `height`, `display`, `color`, fonts |
+| `separator` | yes | `height`, `margin`, `display` |
+| `cursor` | | `color` (fill), `border-color` (outline), `height` (scale) |
+
+**When the theme has a problem,** pane shows it on screen in a panel at the bottom
+left, with the file and line: an unknown property, a bad value, a property with no
+effect where it's used, or an element that doesn't exist (a typo like `windw`). Click
+the panel to hide it; it comes back when the theme changes. The same messages go to
+pane's output. Both CSS engines report the same problems.
 
 Selectors and values: type, `.class`, `:state`, `[attr=v]`, `[attr*=v]`, `[attr^=v]`, `[attr$=v]`, descendant and `>` combinators; custom properties (`--accent: #7aa2f7` plus `var(--accent)`); named colors, `#rgb`, `#rrggbbaa`, `rgb()`, `rgba()`. A border without a color takes the text color.
 
@@ -139,7 +161,7 @@ window { transition: border-color 200ms, box-shadow 250ms ease-out; }
 desktop { background: url(~/wallpaper.png) center / cover no-repeat #1a1b26; }
 ```
 
-**Fonts.** With FreeType, `font-family` names any TrueType/OpenType family installed under `/usr/share/fonts`, `/usr/local/share/fonts` or `~/.local/share/fonts` (pane scans those directories itself, no fontconfig needed). Without FreeType, or when no listed family is found, it falls back to Linux console PSF fonts, named as in `/usr/share/consolefonts` (for example `"Lat2-Terminus16"`), which scale by whole multiples. List both, and the theme works either way.
+**Fonts.** With FreeType, `font-family` names any TrueType/OpenType family installed under `/usr/share/fonts`, `/usr/local/share/fonts` or `~/.local/share/fonts` (pane scans those directories itself, no fontconfig needed). Without FreeType, or when no listed family is found, it falls back to Linux console PSF fonts, named as in `/usr/share/consolefonts` (for example `"Lat2-Terminus16"`), which scale by whole multiples: a 16px console font looks the same at every size up to 23px, and doubles from 24px. List both, and the theme works either way. (pane's problems panel says when a font size can't take effect because pane was built without FreeType.)
 
 **Images.** `url()` takes PNG files (any color type, bit depth or interlacing; pane has its own decoder on top of zlib). Relative paths are relative to the theme file, and `~/` is your home directory. Images are decoded once and cached, along with scaled copies.
 
