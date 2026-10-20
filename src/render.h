@@ -43,7 +43,7 @@ int text_width(const struct font *f, int scale, const char *utf8);
 void draw_text(struct canvas *c, const struct font *f, int scale, int x, int y, const char *utf8,
                struct color col, float opacity, int max_w);
 
-enum icon { ICON_CLOSE, ICON_MAXIMIZE, ICON_RESTORE, ICON_MINIMIZE };
+enum icon { ICON_CLOSE, ICON_MAXIMIZE, ICON_RESTORE, ICON_MINIMIZE, ICON_CHECK };
 void draw_icon(struct canvas *c, struct rect r, enum icon icon, struct color col, float opacity);
 void draw_cursor(struct canvas *c, int x, int y, int scale, struct color fill, struct color outline);
 

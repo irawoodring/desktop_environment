@@ -3,11 +3,17 @@
  * Elements you can style:
  *   desktop                       the background
  *   window                        frame: border, radius, shadow, opacity
+ *   window.<class>                any class you style here can be toggled on a window from
+ *                                 its window menu (right-click the title bar, or Alt+Space)
  *     titlebar                    height, background, padding
  *       title                     color, font-family, font-size, text-align
  *       button.close / .maximize / .minimize    width, height, margin, background,
  *                                 border-radius, color (icon), display, float
- *   popup                         menus: box-shadow, border
+ *   popup                         apps' own menus: box-shadow, border
+ *   menu                          the window menu: background, border, padding, shadow
+ *     menuitem                    entries (:hover; .checked for active classes,
+ *                                 .close/.minimize/... for the actions)
+ *     separator, heading
  *   cursor                        color (fill), border-color (outline), height (scale)
  *
  * States: window:focused :maximized :fullscreen :hover, button:hover :active
@@ -90,4 +96,60 @@ popup {
 cursor {
   color: white;
   border-color: black;
+}
+
+/* ---- window classes: toggle these per window from the window menu ---- */
+
+window.work titlebar,
+window.work:focused titlebar {
+  background: linear-gradient(to bottom, #2d4a3e, #213a30);
+}
+window.work:focused { border-color: #9ece6a; }
+
+window.personal titlebar,
+window.personal:focused titlebar {
+  background: linear-gradient(to bottom, #4a2d4a, #3a2140);
+}
+window.personal:focused { border-color: #bb9af7; }
+
+window.urgent {
+  border-color: #f7768e;
+  box-shadow: 0 0 24px rgba(247, 118, 142, 0.7);
+}
+
+window.dim { opacity: 0.7; }
+
+/* ---- the window menu ---- */
+
+menu {
+  background: #1f2335;
+  border: 1px solid #3b4261;
+  border-radius: 8px;
+  padding: 5px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  color: var(--text);
+  font-family: "Lat2-Terminus16";
+}
+
+menuitem {
+  height: 26px;
+  padding: 0 12px 0 8px;
+  border-radius: 5px;
+}
+
+menuitem:hover { background: #3d59a1; color: white; }
+menuitem.close:hover { background: #f7768e; color: #1a1b26; }
+menuitem.checked { color: var(--accent); }
+menuitem.checked:hover { color: white; }
+
+separator {
+  height: 1px;
+  margin: 5px 8px;
+  background: #3b4261;
+}
+
+heading {
+  height: 22px;
+  padding: 0 8px;
+  color: var(--text-dim);
 }

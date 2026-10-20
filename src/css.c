@@ -160,6 +160,7 @@ struct rule {
     int nsels;
     struct decl *decls;
     int ndecls;
+    bool ua;                       /* from the built-in defaults: any theme rule beats it */
 };
 
 struct sheet { struct rule *rules; int nrules; };
@@ -831,6 +832,47 @@ static void emit_decl(struct strbuf *b, const char *name, const struct toks *v, 
     free(val.s);
 }
 
+/* ------------------------------------------------------------ window classes */
+
+/* Every class the theme uses on a window (window.work, window.dim titlebar, ...) is
+ * offered in the window menu, so styling a class is all it takes to make it usable. */
+static char window_classes[32][32];
+static int nwindow_classes;
+
+void css_window_classes_reset(void) { nwindow_classes = 0; }
+
+const char *css_window_class(int i) { return i >= 0 && i < nwindow_classes ? window_classes[i] : NULL; }
+
+static void add_window_class(const char *name) {
+    for (int i = 0; i < nwindow_classes; i++)
+        if (!strcmp(window_classes[i], name)) return;
+    if (nwindow_classes < 32) snprintf(window_classes[nwindow_classes++], 32, "%s", name);
+}
+
+static bool is_combinator(const struct tok *t) {
+    return t->t == T_WS || t->t == T_COMMA || (t->t == T_DELIM && (t->s[0] == '>' || t->s[0] == '+' || t->s[0] == '~'));
+}
+
+/* find "window" compounds in a selector and note their .classes */
+static void collect_window_classes(const struct tok *t, int start, int end) {
+    for (int i = start; i < end; i++) {
+        if (t[i].t != T_IDENT || strcmp(t[i].s, "window") || (i > start && !is_combinator(&t[i - 1]))) continue;
+        for (int j = i + 1; j < end && !is_combinator(&t[j]); j++)
+            if (t[j].t == T_DELIM && t[j].s[0] == '.' && j + 1 < end && t[j + 1].t == T_IDENT)
+                add_window_class(t[j + 1].s);
+    }
+}
+
+/* The "user agent stylesheet": defaults for things a theme may not mention (like the
+ * window menu, which older themes predate). Theme rules always win over these. */
+const char css_base_sheet[] =
+    "menu { background: #2a2a2e; color: #e6e6e6; border: 1px solid #4a4a52; padding: 4px;"
+    "       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5); }\n"
+    "menuitem { padding: 0 10px; }\n"
+    "menuitem:hover { background: #4a6fa5; color: white; }\n"
+    "separator { height: 1px; margin: 4px 6px; background: #4a4a52; }\n"
+    "heading { padding: 0 10px; color: #8a8a94; }\n";
+
 /* ------------------------------------------------------------------- parsing */
 
 /* Parse a whole sheet. With `out`, build the built-in engine's rules (and report every
@@ -880,6 +922,7 @@ static int parse_sheet(const char *text, const char *file, struct sheet *out, st
         pre_end = realloc(pre_end, (sh.nrules + 1) * sizeof *pre_end);
         pre_start[sh.nrules] = start;
         pre_end[sh.nrules] = end;
+        collect_window_classes(t, start, end);
         parse_block(&ps, &i, sh.nrules);
         sh.nrules++;
     }
@@ -991,6 +1034,19 @@ float style_radius(const struct style *s, int w, int h) {
 
 static struct sheet active;
 
+/* the defaults first, then the theme */
+static void activate(struct sheet *theme) {
+    struct sheet base;
+    parse_sheet(css_base_sheet, "(built-in defaults)", &base, NULL);
+    for (int i = 0; i < base.nrules; i++) base.rules[i].ua = true;
+    base.rules = realloc(base.rules, (base.nrules + theme->nrules) * sizeof *base.rules);
+    memcpy(base.rules + base.nrules, theme->rules, theme->nrules * sizeof *theme->rules);
+    base.nrules += theme->nrules;
+    free(theme->rules);
+    free_sheet(&active);
+    active = base;
+}
+
 int css_load_file(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
@@ -1002,26 +1058,28 @@ int css_load_file(const char *path) {
     text[n] = '\0';
     fclose(f);
     struct sheet sh;
+    css_window_classes_reset();
     int errors = parse_sheet(text, path, &sh, NULL);
     free(text);
     /* keep going with whatever parsed: like a browser, bad declarations are just skipped */
-    free_sheet(&active);
-    active = sh;
+    activate(&sh);
     fprintf(stderr, "pane: loaded %s (%d rules%s)\n", path, sh.nrules, errors ? ", with errors" : "");
     return 0;
 }
 
 void css_load_string(const char *text, const char *name) {
     struct sheet sh;
+    css_window_classes_reset();
     parse_sheet(text, name, &sh, NULL);
-    free_sheet(&active);
-    active = sh;
+    activate(&sh);
 }
 
 struct match { int spec, order; const struct rule *r; };
 
+/* cascade order: defaults before the theme, then specificity, then source order */
 static int cmp_match(const void *a, const void *b) {
     const struct match *x = a, *y = b;
+    if (x->r->ua != y->r->ua) return x->r->ua ? -1 : 1;
     if (x->spec != y->spec) return x->spec - y->spec;
     return x->order - y->order;
 }

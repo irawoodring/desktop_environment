@@ -4,12 +4,16 @@
  * computed style of each element, exactly like a browser does for the DOM:
  *
  *   desktop
- *   window   [app-id="..."] [title="..."]   :focused :maximized :fullscreen :hover
+ *   window.<class>  [app-id="..."] [title="..."]   :focused :maximized :fullscreen :hover
  *     titlebar
  *       title
  *       button.close / button.maximize / button.minimize   :hover :active
  *   popup
  *   cursor
+ *   menu                                (the window menu)
+ *     menuitem.action / menuitem.class(.checked)   :hover
+ *     separator
+ *     heading
  *
  * Two interchangeable engines implement this interface (pick one at build time):
  *
@@ -78,3 +82,8 @@ float style_radius(const struct style *s, int w, int h);       /* resolves perce
 bool css_apply_property(struct style *s, const char *name, const char *value);
 /* Turn a pane theme into plain CSS libcss can parse. Returns a malloc'd string. */
 char *css_rewrite_for_libcss(const char *text, const char *file);
+/* Defaults for things a theme may not style (the window menu); themes override them. */
+extern const char css_base_sheet[];
+/* The classes the loaded theme uses on windows (window.work ...): i = 0, 1, ... until NULL. */
+const char *css_window_class(int i);
+void css_window_classes_reset(void);

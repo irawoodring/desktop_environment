@@ -10,6 +10,7 @@
 
 #include <linux/input-event-codes.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -88,7 +89,8 @@ static const enum part button_part[3] = { PART_CLOSE, PART_MAXIMIZE, PART_MINIMI
 /* Build the window's element tree (window > titlebar > title, buttons), style it, and
  * release it again: like a browser restyling a tiny DOM. */
 static void compute_styles(struct toplevel *t, unsigned states, struct layout *L) {
-    struct css_elem ew = { .name = "window", .states = states, .app_id = t->app_id, .title = t->title };
+    struct css_elem ew = { .name = "window", .cls = t->classes, .states = states, .app_id = t->app_id,
+                           .title = t->title };
     struct css_elem eb = { .name = "titlebar", .app_id = t->app_id, .title = t->title, .parent = &ew };
     struct css_elem et = { .name = "title", .app_id = t->app_id, .title = t->title, .parent = &eb };
     struct css_elem btn[3];
@@ -464,6 +466,7 @@ static struct toplevel *popup_root(struct popup *p) {
 }
 
 static void forget_window(struct toplevel *t) {
+    menu_forget(t);
     struct popup *p, *tmp;
     list_for_each_safe(p, tmp, &popups, link)
         if (p->mapped && popup_root(p) == t) popup_send_done(p);
@@ -597,6 +600,7 @@ bool wm_start_drag(struct client *c) {
 }
 
 static void process_motion(void);
+static void open_menu(struct toplevel *t, int x, int y, bool keyboard);
 
 void wm_drag_started(void) {
     grab = G_DRAG;          /* pointer events now drive the drag, not wl_pointer */
@@ -617,6 +621,10 @@ void wm_drag_ended(void) {
 /* --------------------------------------------------------------------- input */
 
 static void process_motion(void) {
+    if (menu_is_open()) {   /* the menu has the pointer */
+        menu_motion(ptr_x, ptr_y);
+        return;
+    }
     if (grab == G_DRAG) {
         struct hit h = hit_test(ptr_x, ptr_y);
         seat_drag_motion(h.s, h.sx, h.sy);
@@ -694,6 +702,11 @@ void wm_pointer_button(uint32_t button, bool pressed) {
     if (pressed) buttons_down++;
     else if (buttons_down > 0) buttons_down--;
 
+    if (menu_is_open()) {
+        menu_button(button, pressed, ptr_x, ptr_y);
+        return;
+    }
+
     if (grab == G_DRAG) {
         if (!pressed && buttons_down == 0) seat_drag_drop();
         return;
@@ -768,6 +781,8 @@ void wm_pointer_button(uint32_t button, bool pressed) {
             start_move(h.t);
         } else if (button == BTN_MIDDLE) {
             minimize(h.t);
+        } else if (button == BTN_RIGHT) {
+            open_menu(h.t, (int)ptr_x, (int)ptr_y, false);
         }
         break;
     case PART_BORDER:
@@ -779,7 +794,7 @@ void wm_pointer_button(uint32_t button, bool pressed) {
 }
 
 void wm_pointer_axis(int axis, double value, int discrete) {
-    if (grab == G_MOVE || grab == G_RESIZE || grab == G_DRAG) return;
+    if (grab == G_MOVE || grab == G_RESIZE || grab == G_DRAG || menu_is_open()) return;
     seat_pointer_axis(axis, value, discrete);
 }
 
@@ -788,7 +803,12 @@ void wm_key(uint32_t key, bool pressed) {
         if (pressed) seat_drag_cancel();
         return;
     }
-    seat_keyboard_key(key, pressed);
+    if (menu_is_open()) {   /* keep modifier state right, but the app doesn't see these keys */
+        seat_keyboard_key(key, pressed, true);
+        menu_key(key, pressed);
+        return;
+    }
+    seat_keyboard_key(key, pressed, false);
 }
 
 /* ------------------------------------------------------------------- actions */
@@ -806,6 +826,59 @@ void wm_action_cycle(void) {
 void wm_action_close(void) { if (focused) toplevel_send_close(focused); }
 void wm_action_maximize(void) { if (focused) maximize(focused, !focused->maximized); }
 void wm_action_terminal(void) { if (srv.terminal) spawn(srv.terminal); }
+
+/* -------------------------------------------------------------- window menu */
+
+static void open_menu(struct toplevel *t, int x, int y, bool keyboard) {
+    if (grab == G_MOVE || grab == G_RESIZE || grab == G_DRAG || !t->xdg || !t->xdg->mapped) return;
+    /* the menu takes the pointer, even from a client that's holding a button down */
+    grab = G_NONE;
+    implicit_surface = NULL;
+    seat_pointer_leave();
+    client_cursor = false;
+    dismiss_popups();
+    focus_window(t);
+    menu_open(t, x, y, keyboard);
+}
+
+void wm_action_window_menu(void) {
+    if (!focused) return;
+    struct layout L;
+    layout_window(focused, &L);
+    struct rect anchor = L.decorated ? L.titlebar : L.content;   /* under the title bar's left end */
+    open_menu(focused, anchor.x, anchor.y + (L.decorated ? anchor.h : 0), true);
+}
+
+void wm_show_window_menu(struct toplevel *t, int x, int y) { open_menu(t, t->x + x, t->y + y, false); }
+
+void wm_menu_closed(void) {
+    process_motion();   /* give the pointer back to whatever is under it */
+    wm_damage();
+}
+
+void wm_window_minimize(struct toplevel *t) { minimize(t); }
+void wm_window_maximize(struct toplevel *t, bool on) { maximize(t, on); }
+void wm_window_fullscreen(struct toplevel *t, bool on) { fullscreen(t, on); }
+
+bool wm_window_has_class(struct toplevel *t, const char *cls) {
+    size_t n = strlen(cls);
+    for (const char *p = t->classes; (p = strstr(p, cls)); p += n)
+        if ((p == t->classes || p[-1] == ' ') && (p[n] == '\0' || p[n] == ' ')) return true;
+    return false;
+}
+
+void wm_window_toggle_class(struct toplevel *t, const char *cls) {
+    char out[sizeof t->classes] = "", copy[sizeof t->classes];
+    bool had = wm_window_has_class(t, cls);
+    snprintf(copy, sizeof copy, "%s", t->classes);
+    for (char *save, *c = strtok_r(copy, " ", &save); c; c = strtok_r(NULL, " ", &save)) {
+        if (!strcmp(c, cls)) continue;
+        if (strlen(out) + strlen(c) + 2 < sizeof out) { if (out[0]) strcat(out, " "); strcat(out, c); }
+    }
+    if (!had && strlen(out) + strlen(cls) + 2 < sizeof out) { if (out[0]) strcat(out, " "); strcat(out, cls); }
+    snprintf(t->classes, sizeof t->classes, "%s", out);
+    wm_damage();
+}
 
 /* ------------------------------------------------------------------ drawing */
 
@@ -954,5 +1027,6 @@ void wm_render(struct canvas *c) {
     struct popup *p;
     list_for_each(p, &popups, link)
         if (p->mapped) draw_popup(c, p);
+    menu_draw(c);
     draw_pointer(c);
 }

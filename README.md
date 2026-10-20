@@ -8,7 +8,7 @@ The same server with [a different stylesheet](docs/example-light-theme.css), rel
 
 ![a light theme](docs/light-theme.png)
 
-About 7,800 lines in total. Each file starts with a comment explaining the idea it implements.
+About 8,300 lines in total. Each file starts with a comment explaining the idea it implements.
 
 ## Building
 
@@ -67,6 +67,7 @@ The demo client depends only on xkbcommon. Move the mouse over it, click, scroll
 | Super+Up / Alt+F10 | maximize / restore |
 | Super+Enter / Ctrl+Alt+T | launch the terminal (`-t CMD`, default `foot`) |
 | Alt+drag, Alt+right-drag | move / resize from anywhere in a window |
+| right-click the title bar, or Alt+Space | the window menu: minimize, maximize, fullscreen, close, and [window classes](#window-classes) |
 | Escape during a drag-and-drop | cancel the drag |
 | title bar: drag, double-click, middle-click | move, maximize, minimize |
 
@@ -101,11 +102,15 @@ The theme is a CSS file. Save it and the server reloads it immediately, with no 
 
 ```
 desktop
-window            :focused :maximized :fullscreen :hover   [app-id="..."] [title*="..."]
+window.<class>    :focused :maximized :fullscreen :hover   [app-id="..."] [title*="..."]
   titlebar
     title
     button.close / button.maximize / button.minimize   :hover :active
-popup             (menus, tooltips)
+popup             (apps' own menus and tooltips)
+menu              (the window menu)
+  menuitem        :hover   .action.close (.minimize ...)   .class   .checked
+  separator
+  heading
 cursor
 ```
 
@@ -122,6 +127,20 @@ window:maximized { border-radius: 0; box-shadow: none; }
 ```
 
 See [theme.css](theme.css) (the default) and [docs/example-light-theme.css](docs/example-light-theme.css).
+
+### Window classes
+
+Any window can carry CSS classes, which you toggle from its window menu (right-click the title bar, or press Alt+Space). The menu offers every class your theme styles on windows, so adding a class takes nothing more than writing CSS for it:
+
+```css
+window.work titlebar { background: linear-gradient(to bottom, #2d4a3e, #213a30); }
+window.urgent { border-color: #f7768e; box-shadow: 0 0 24px rgba(247, 118, 142, 0.7); }
+window.dim { opacity: 0.7; }
+```
+
+Classes combine with everything else, so selectors like `window.work:focused`, `window.dim[app-id="foot"]` and `window:not(.work)` (with libcss) all work. A window keeps its classes until it closes. Apps that draw their own title bars (GTK) also get the menu, through `xdg_toplevel.show_window_menu`, but on those windows only whole-window properties such as `opacity` have a visible effect, because pane doesn't draw their frame.
+
+The menu itself is styled with `menu`, `menuitem`, `separator` and `heading`. A small built-in stylesheet gives it sensible defaults, so themes that don't mention it still get a usable menu. Theme rules always take priority over those defaults, the way a browser's own defaults work.
 
 ### The two CSS engines
 
@@ -163,6 +182,7 @@ Commands are processed as fast as they arrive, so put small pauses between a but
 | `src/xdg.c` | windows and popups (`xdg_wm_base`), the configure/ack handshake, popup positioning, `xdg-decoration` |
 | `src/seat.c` | pointer, keyboard (xkbcommon keymap shared via a sealed memfd), keybindings, clipboard, drag and drop |
 | `src/wm.c` | window management: stacking, focus, hit-testing, move/resize/maximize, popup grabs, drawing |
+| `src/menu.c` | the window menu: actions and toggling a window's CSS classes |
 | `src/css.c` | the built-in CSS engine (tokenizer, parser, selector matcher, cascade), the value parser, and the rewrite for libcss |
 | `src/css_libcss.c` | the libcss engine: the selection callbacks over pane's element tree, and turning computed styles back into pane's |
 | `src/render.c`, `src/font.c` | software rasterizer (signed-distance rounded corners, gradients, shadows) and PSF fonts |

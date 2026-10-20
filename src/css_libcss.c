@@ -23,6 +23,7 @@ enum { SLOT_NODE_DATA, SLOT_RESULTS, SLOT_COMPOSED, SLOT_CLASSES };
 
 static css_select_ctx *select_ctx;
 static css_stylesheet *sheet;
+static css_stylesheet *ua_sheet;   /* css_base_sheet, at "user agent" origin */
 
 static css_unit_ctx unit_ctx = {
     .viewport_width = 1920 * (1 << CSS_RADIX_POINT),
@@ -308,10 +309,9 @@ static css_error resolve_url(void *pw, const char *base, lwc_string *rel, lwc_st
     return CSS_OK;
 }
 
-static int load_text(const char *text, const char *name) {
+static css_stylesheet *parse(const char *text, const char *name) {
     char *css = css_rewrite_for_libcss(text, name);
     if (getenv("PANE_CSS_DEBUG")) fprintf(stderr, "--- %s as given to libcss:\n%s---\n", name, css);
-
     css_stylesheet_params params = {
         .params_version = CSS_STYLESHEET_PARAMS_VERSION_1,
         .level = CSS_LEVEL_DEFAULT,
@@ -320,21 +320,36 @@ static int load_text(const char *text, const char *name) {
         .title = name,
         .resolve = resolve_url,
     };
-    css_stylesheet *new_sheet = NULL;
-    css_select_ctx *new_ctx = NULL;
-    css_error err = css_stylesheet_create(&params, &new_sheet);
+    css_stylesheet *sh = NULL;
+    css_error err = css_stylesheet_create(&params, &sh);
     if (err == CSS_OK) {
-        err = css_stylesheet_append_data(new_sheet, (const uint8_t *)css, strlen(css));
+        err = css_stylesheet_append_data(sh, (const uint8_t *)css, strlen(css));
         if (err == CSS_NEEDDATA) err = CSS_OK;
     }
-    if (err == CSS_OK) err = css_stylesheet_data_done(new_sheet);
-    if (err == CSS_OK) err = css_select_ctx_create(&new_ctx);
-    if (err == CSS_OK) err = css_select_ctx_append_sheet(new_ctx, new_sheet, CSS_ORIGIN_AUTHOR, NULL);
+    if (err == CSS_OK) err = css_stylesheet_data_done(sh);
     free(css);
     if (err != CSS_OK) {
         fprintf(stderr, "pane: libcss rejected %s: %s\n", name, css_error_to_string(err));
+        if (sh) css_stylesheet_destroy(sh);
+        return NULL;
+    }
+    return sh;
+}
+
+static int load_text(const char *text, const char *name) {
+    if (!ua_sheet && !(ua_sheet = parse(css_base_sheet, "(built-in defaults)"))) return -1;
+    css_window_classes_reset();
+    css_stylesheet *new_sheet = parse(text, name);
+    if (!new_sheet) return -1;
+    /* the cascade puts author (theme) rules above user-agent rules, whatever their specificity */
+    css_select_ctx *new_ctx = NULL;
+    css_error err = css_select_ctx_create(&new_ctx);
+    if (err == CSS_OK) err = css_select_ctx_append_sheet(new_ctx, ua_sheet, CSS_ORIGIN_UA, NULL);
+    if (err == CSS_OK) err = css_select_ctx_append_sheet(new_ctx, new_sheet, CSS_ORIGIN_AUTHOR, NULL);
+    if (err != CSS_OK) {
+        fprintf(stderr, "pane: libcss: %s\n", css_error_to_string(err));
         if (new_ctx) css_select_ctx_destroy(new_ctx);
-        if (new_sheet) css_stylesheet_destroy(new_sheet);
+        css_stylesheet_destroy(new_sheet);
         return -1;
     }
     if (select_ctx) css_select_ctx_destroy(select_ctx);

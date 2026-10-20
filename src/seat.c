@@ -209,6 +209,7 @@ static bool keybinding(xkb_keysym_t sym, uint32_t mods) {
         return true;
     }
     if (mods == MOD_ALT && sym == XKB_KEY_F4) { wm_action_close(); return true; }
+    if (mods == MOD_ALT && sym == XKB_KEY_space) { wm_action_window_menu(); return true; }
     if ((mods == MOD_SUPER && sym == XKB_KEY_Up) || (mods == MOD_ALT && sym == XKB_KEY_F10)) {
         wm_action_maximize();
         return true;
@@ -225,7 +226,7 @@ static void list_del(uint32_t *v, int *n, uint32_t key) {
         if (v[i] == key) { v[i] = v[--*n]; return; }
 }
 
-bool seat_keyboard_key(uint32_t key, bool down) {
+bool seat_keyboard_key(uint32_t key, bool down, bool swallow) {
     /* evdev codes are xkb codes minus 8 (an X11 legacy) */
     xkb_state_update_key(xkb, key + 8, down ? XKB_KEY_DOWN : XKB_KEY_UP);
     if (down) {
@@ -237,7 +238,7 @@ bool seat_keyboard_key(uint32_t key, bool down) {
     bool eaten = false;
     if (down) {
         xkb_keysym_t sym = xkb_state_key_get_one_sym(xkb, key + 8);
-        if (keybinding(sym, seat_modifiers())) {
+        if (swallow || keybinding(sym, seat_modifiers())) {   /* the release gets swallowed too */
             eaten = true;
             if (nswallowed < 32) swallowed[nswallowed++] = key;
         }

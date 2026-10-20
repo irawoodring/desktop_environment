@@ -331,6 +331,11 @@ void draw_icon(struct canvas *c, struct rect r, enum icon icon, struct color col
             case ICON_MAXIMIZE:
                 d = fabsf(rrect_sdf(l, t, rr, b, 0, px, py));
                 break;
+            case ICON_CHECK: {   /* a tick: down to the lower third, then up to the corner */
+                float mx = l + (rr - l) * 0.38f;
+                d = fminf(seg_dist(px, py, l, t + (b - t) * 0.55f, mx, b), seg_dist(px, py, mx, b, rr, t));
+                break;
+            }
             default: {   /* ICON_RESTORE: two overlapping squares */
                 float o = (rr - l) * 0.3f;
                 float d1 = fabsf(rrect_sdf(l, t + o, rr - o, b, 0, px, py));

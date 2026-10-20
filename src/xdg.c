@@ -195,7 +195,7 @@ static void toplevel_dispatch(struct object *o, uint16_t op, union wire_arg *a) 
         snprintf(t->app_id, sizeof t->app_id, "%s", a[0].s);
         wm_toplevel_title_changed(t);
         break;
-    case 4: break;   /* show_window_menu: no window menu (yet) */
+    case 4: wm_show_window_menu(t, a[2].i, a[3].i); break;   /* show_window_menu(seat, serial, x, y) */
     case 5: wm_toplevel_request(t, REQ_MOVE, 0); break;
     case 6: wm_toplevel_request(t, REQ_RESIZE, a[2].u); break;
     case 7: t->max_w = a[0].i; t->max_h = a[1].i; break;
