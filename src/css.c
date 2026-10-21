@@ -491,9 +491,10 @@ void css_set_base_dir(const char *theme_path) {
     else snprintf(base_dir, sizeof base_dir, ".");
 }
 
-/* url() paths: ~/ is home, relative ones are relative to the theme file */
+/* url() paths: ~/ is home, relative ones are relative to the theme file; file:// URLs work too */
 static void resolve_path(const char *in, char *out, size_t n) {
     const char *home = getenv("HOME");
+    if (!strncmp(in, "file://", 7)) in += 7;   /* as file managers copy paths: file:///home/... */
     if (in[0] == '~' && in[1] == '/' && home) snprintf(out, n, "%s/%s", home, in + 2);
     else if (in[0] == '/') snprintf(out, n, "%s", in);
     else snprintf(out, n, "%s/%s", base_dir, in);
