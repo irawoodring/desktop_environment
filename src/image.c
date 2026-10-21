@@ -1,4 +1,5 @@
-/* image.c — a PNG decoder, and smooth scaling, for CSS background images.
+/* image.c — loading CSS background images (PNG here, JPEG in jpeg.c), and
+ * smooth scaling.
  *
  * A PNG file is an 8-byte signature followed by chunks: [length][type][data][crc].
  *   IHDR  width, height, bit depth, color type, interlace method
@@ -12,11 +13,13 @@
  * progressively finer sub-images one after another. */
 #include "render.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zlib.h>
 #include <math.h>
+
 
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 
@@ -113,11 +116,11 @@ static void convert_row(const struct png *p, const uint8_t *row, int w, uint32_t
 
 static size_t row_bytes(const struct png *p, int w) { return ((size_t)w * p->channels * p->depth + 7) / 8; }
 
-static struct image *decode(const uint8_t *d, size_t len, const char *path) {
-    if (len < 8 || memcmp(d, "\x89PNG\r\n\x1a\n", 8)) {
-        fprintf(stderr, "pane: %s: not a PNG (only PNG backgrounds are supported)\n", path);
-        return NULL;
-    }
+/* why the PNG couldn't be decoded, for the theme's problems panel */
+static char *png_err;
+static size_t png_errlen;
+
+static struct image *decode(const uint8_t *d, size_t len) {
     struct png p = { 0 };
     uint8_t *z = NULL;
     size_t zlen = 0;
@@ -158,7 +161,7 @@ static struct image *decode(const uint8_t *d, size_t len, const char *path) {
     static const int channels[7] = { 1, 0, 3, 1, 2, 0, 4 };
     if (!have_ihdr || p.w <= 0 || p.h <= 0 || p.w > 16384 || p.h > 16384 || p.ctype > 6 ||
         !channels[p.ctype] || !(p.depth == 1 || p.depth == 2 || p.depth == 4 || p.depth == 8 || p.depth == 16)) {
-        fprintf(stderr, "pane: %s: unsupported PNG\n", path);
+        snprintf(png_err, png_errlen, "unsupported kind of PNG");
         free(z);
         return NULL;
     }
@@ -178,7 +181,7 @@ static struct image *decode(const uint8_t *d, size_t len, const char *path) {
     uint8_t *raw = malloc(raw_len);
     uLongf got = raw_len;
     if (!raw || uncompress(raw, &got, z, zlen) != Z_OK || got != raw_len) {
-        fprintf(stderr, "pane: %s: corrupt PNG data\n", path);
+        snprintf(png_err, png_errlen, "corrupt PNG data");
         free(raw);
         free(z);
         return NULL;
@@ -197,7 +200,7 @@ static struct image *decode(const uint8_t *d, size_t len, const char *path) {
         if (pw <= 0 || ph <= 0) continue;
         size_t rb = row_bytes(&p, pw);
         if (!unfilter(pass, ph, rb, bpp)) {
-            fprintf(stderr, "pane: %s: bad PNG filter\n", path);
+            snprintf(png_err, png_errlen, "corrupt PNG data (bad filter)");
             free(img->px);
             free(img);
             free(raw);
@@ -214,7 +217,7 @@ static struct image *decode(const uint8_t *d, size_t len, const char *path) {
 
 /* --------------------------------------------------------------------- caches */
 
-struct loaded { char path[512]; struct image *img; };
+struct loaded { char path[512]; struct image *img; char err[160]; };
 static struct loaded loaded[16];
 static int nloaded;
 
@@ -222,29 +225,61 @@ struct scaled { const struct image *src; struct image img; unsigned last_use; };
 static struct scaled scaled[8];
 static unsigned use_clock;
 
+static const char *last_err = "";
+
+const char *image_error(void) { return last_err; }
+
+static struct image *load_file(const char *path, char *err, size_t errlen) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        snprintf(err, errlen, "can't open it (%s)", strerror(errno));
+        return NULL;
+    }
+    struct image *img = NULL;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *data = len > 0 ? malloc(len) : NULL;
+    if (!data || fread(data, 1, len, f) != (size_t)len) {
+        snprintf(err, errlen, "can't read it");
+    } else if (len >= 8 && !memcmp(data, "\x89PNG\r\n\x1a\n", 8)) {
+        png_err = err;
+        png_errlen = errlen;
+        img = decode(data, len);
+        if (!img && !err[0]) snprintf(err, errlen, "can't decode this PNG");
+    } else if (len >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF) {
+        img = jpeg_decode(data, len, err, errlen);
+        if (!img && !err[0]) snprintf(err, errlen, "can't decode this JPEG");
+    } else {
+        snprintf(err, errlen, "not a PNG or JPEG image");
+    }
+    free(data);
+    fclose(f);
+    return img;
+}
+
 const struct image *image_load(const char *path) {
     for (int i = 0; i < nloaded; i++)
-        if (!strcmp(loaded[i].path, path)) return loaded[i].img;
-    FILE *f = fopen(path, "rb");
-    struct image *img = NULL;
-    if (!f) {
-        fprintf(stderr, "pane: can't open image %s\n", path);
-    } else {
-        fseek(f, 0, SEEK_END);
-        long len = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        uint8_t *data = len > 0 ? malloc(len) : NULL;
-        if (data && fread(data, 1, len, f) == (size_t)len) img = decode(data, len, path);
-        free(data);
-        fclose(f);
-    }
+        if (!strcmp(loaded[i].path, path)) {
+            last_err = loaded[i].err;
+            return loaded[i].img;
+        }
+    static char err[160];
+    err[0] = '\0';
+    struct image *img = load_file(path, err, sizeof err);
+    if (!img) fprintf(stderr, "pane: %s: %s\n", path, err);
+    last_err = err;
     /* remember failures too, so a bad path isn't retried every frame */
     if (nloaded < 16) {
-        snprintf(loaded[nloaded].path, sizeof loaded[nloaded].path, "%s", path);
-        loaded[nloaded++].img = img;
+        struct loaded *l = &loaded[nloaded++];
+        snprintf(l->path, sizeof l->path, "%s", path);
+        snprintf(l->err, sizeof l->err, "%s", err);
+        l->img = img;
+        last_err = l->err;
     }
     return img;
 }
+
 
 /* halve until within 2x of the target (averaging 2x2 blocks), then bilinear: cheap, and
  * no shimmering when a big wallpaper is shrunk to fit */

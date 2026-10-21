@@ -197,6 +197,7 @@ struct raw_decl { char name[48]; int rule; int start, end; bool important; };   
 struct parser {
     struct toks *ts;
     const char *file;
+    bool quiet;                    /* re-reading values already checked: say nothing */
     int errors;
     struct raw_decl *raw;
     int nraw, capraw;
@@ -214,6 +215,7 @@ int css_message_count(void) { return nmessages_total; }
 const char *css_message(int i) { return i >= 0 && i < nmessages ? messages[i] : NULL; }
 
 static void err(struct parser *ps, int line, const char *msg, const char *what) {
+    if (ps->quiet) return;
     fprintf(stderr, "%s:%d: %s%s%s\n", ps->file, line, msg, what ? " " : "", what ? what : "");
     const char *base = strrchr(ps->file, '/');
     if (nmessages < MAX_MESSAGES)
@@ -489,9 +491,10 @@ void css_set_base_dir(const char *theme_path) {
     else snprintf(base_dir, sizeof base_dir, ".");
 }
 
-/* url() paths: ~/ is home, relative ones are relative to the theme file */
+/* url() paths: ~/ is home, relative ones are relative to the theme file; file:// URLs work too */
 static void resolve_path(const char *in, char *out, size_t n) {
     const char *home = getenv("HOME");
+    if (!strncmp(in, "file://", 7)) in += 7;   /* as file managers copy paths: file:///home/... */
     if (in[0] == '~' && in[1] == '/' && home) snprintf(out, n, "%s/%s", home, in + 2);
     else if (in[0] == '/') snprintf(out, n, "%s", in);
     else snprintf(out, n, "%s/%s", base_dir, in);
@@ -634,7 +637,11 @@ static bool parse_radial(struct vcur *v, struct paint *p) {
     return parse_stops(&a, p);
 }
 
-/* background-image: none, a gradient, or url(file.png) */
+/* the declaration being parsed, for reporting a background image that won't load */
+static struct parser *decl_ps;
+static int decl_line;
+
+/* background-image: none, a gradient, or url(file.png / .jpg) */
 static bool parse_image(struct vcur *v, struct paint *p) {
     struct tok *k = peek(v);
     if (!k) return false;
@@ -646,8 +653,13 @@ static bool parse_image(struct vcur *v, struct paint *p) {
         char path[768];
         resolve_path(k->s, path, sizeof path);
         v->i++;
-        p->image = image_load(path);   /* prints why if it fails */
+        p->image = image_load(path);
         p->kind = p->image ? PAINT_IMAGE : PAINT_NONE;
+        if (!p->image && decl_ps) {
+            char what[1024];
+            snprintf(what, sizeof what, "%s: %s", path, image_error());
+            err(decl_ps, decl_line, "background image", what);
+        }
         return true;
     }
     return false;
@@ -820,6 +832,8 @@ static int box_index(int n, int side) {
 
 /* Parse the value tokens for one property, appending typed declarations to the rule. */
 static bool parse_decl(struct parser *ps, const char *name, struct vcur *v, struct rule *r, int line) {
+    decl_ps = ps;
+    decl_line = line;
     struct decl d[MAXD];
     int nd = 0;
     struct tok *k;
@@ -1677,7 +1691,7 @@ static void apply_decl(struct style *s, const struct decl *d) {
 bool css_apply_property(struct style *s, const char *name, const char *value) {
     struct toks ts = { 0 };
     tokenize(value, &ts);
-    struct parser ps = { .ts = &ts, .file = "(theme)" };
+    struct parser ps = { .ts = &ts, .file = "(theme)", .quiet = true };
     struct vcur v = { ts.v, 0, ts.n - 1 };   /* without the EOF token */
     struct rule r = { 0 };
     bool ok = parse_decl(&ps, name, &v, &r, 0);
