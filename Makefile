@@ -35,7 +35,7 @@ endif
 
 SERVER_SRC = src/main.c src/event.c src/wire.c src/core.c src/compositor.c src/xdg.c \
              src/seat.c src/wm.c src/menu.c src/anim.c src/input.c src/render.c src/image.c \
-             src/font.c src/css.c src/backend_drm.c src/backend_fbdev.c src/backend_headless.c $(CSS_SRC)
+             src/jpeg.c src/font.c src/css.c src/backend_drm.c src/backend_fbdev.c src/backend_headless.c $(CSS_SRC)
 CLIENT_SRC = client/demo.c src/wire.c
 
 all: build/pane build/pane-demo

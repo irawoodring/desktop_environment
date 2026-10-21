@@ -163,7 +163,7 @@ desktop { background: url(~/wallpaper.png) center / cover no-repeat #1a1b26; }
 
 **Fonts.** With FreeType, `font-family` names any TrueType/OpenType family installed under `/usr/share/fonts`, `/usr/local/share/fonts` or `~/.local/share/fonts` (pane scans those directories itself, no fontconfig needed). Without FreeType, or when no listed family is found, it falls back to Linux console PSF fonts, named as in `/usr/share/consolefonts` (for example `"Lat2-Terminus16"`), which scale by whole multiples: a 16px console font looks the same at every size up to 23px, and doubles from 24px. List both, and the theme works either way. (pane's problems panel says when a font size can't take effect because pane was built without FreeType.)
 
-**Images.** `url()` takes PNG files (any color type, bit depth or interlacing; pane has its own decoder on top of zlib). Relative paths are relative to the theme file, and `~/` is your home directory. Images are decoded once and cached, along with scaled copies.
+**Images.** `url()` takes PNG and JPEG files. pane decodes both itself: PNG of any color type, bit depth or interlacing (on top of zlib), and baseline or progressive JPEG, color or grayscale, turned upright as its EXIF orientation says (as phones expect). Not supported: CMYK, 12-bit, lossless and arithmetic-coded JPEGs, which are rare; the problems panel says so if you hit one. Relative paths are relative to the theme file, and `~/` is your home directory. Images are decoded once and cached, along with scaled copies. If an image can't be loaded (a wrong path, an unsupported file), the problems panel shows the full path pane tried and why.
 
 **Transitions.** When a style changes (a window gains focus, a button is hovered), colors, opacity, radii, shadows and gradients with matching stops blend from the old value to the new one. Sizes, images and fonts switch immediately.
 
@@ -243,7 +243,8 @@ Commands are processed as fast as they arrive, so put small pauses between a but
 | `src/css_libcss.c` | the libcss engine: the selection callbacks over pane's element tree, and turning computed styles back into pane's |
 | `src/render.c` | software rasterizer: signed-distance rounded corners, per-side borders, gradients, image layers, shadows |
 | `src/font.c` | text: FreeType fonts found by scanning font directories, PSF console fonts, kerning, ellipsis, rotation |
-| `src/image.c` | a PNG decoder (on zlib) and smooth scaling, both cached |
+| `src/image.c` | loading images: a PNG decoder (on zlib), smooth scaling, both cached |
+| `src/jpeg.c` | a JPEG decoder: Huffman decoding (baseline and progressive), inverse DCT, color conversion |
 | `src/backend_drm.c` | raw KMS ioctls: connectors, CRTCs, dumb buffers, page flips (no libdrm) |
 | `src/backend_fbdev.c`, `src/backend_headless.c` | the fallback and testing backends |
 | `src/input.c` | evdev devices, hotplug via inotify |
@@ -254,7 +255,7 @@ Commands are processed as fast as they arrive, so put small pauses between a but
 
 ## Status and next steps
 
-The protocol, window management, both CSS engines, drag and drop, tiling, transitions, fonts and PNG decoding (checked pixel for pixel against a reference decoder) were tested headless against Qt 6, GTK 4, foot, weston-simple-shm and wl-clipboard, with sanitizers (ASan/UBSan) enabled. The drag-and-drop tests covered demo to demo, demo to foot, Qt to demo, drops on the desktop, Escape, and the source client being killed mid-drag. **The DRM, fbdev and evdev code paths compile, but I haven't been able to run them on real hardware.** They follow the standard KMS sequence, but expect to debug on first boot. pane's startup output names the connector, mode and input devices it found, which is the place to start.
+The protocol, window management, both CSS engines, drag and drop, tiling, transitions, fonts, PNG decoding (checked pixel for pixel against a reference decoder) and JPEG decoding (within 3 levels of libjpeg, and fuzzed with damaged files) were tested headless against Qt 6, GTK 4, foot, weston-simple-shm and wl-clipboard, with sanitizers (ASan/UBSan) enabled. The drag-and-drop tests covered demo to demo, demo to foot, Qt to demo, drops on the desktop, Escape, and the source client being killed mid-drag. **The DRM, fbdev and evdev code paths compile, but I haven't been able to run them on real hardware.** They follow the standard KMS sequence, but expect to debug on first boot. pane's startup output names the connector, mode and input devices it found, which is the place to start.
 
 Implemented: `wl_compositor` 5, `wl_subcompositor` 1, `wl_shm` 1, `wl_output` 4, `wl_seat` 7, `wl_data_device_manager` 3 (clipboard, drag and drop), `xdg_wm_base` 3, `zxdg_decoration_manager_v1` 1.
 
@@ -265,4 +266,4 @@ Good next projects:
 - **`linux-dmabuf`** for GPU-rendered clients, which means Mesa, GBM and EGL
 - **Xwayland** for X11-only apps; it's just another Wayland client plus some window-manager glue
 - The primary selection (middle-click paste), `xdg-activation`, a panel or launcher written as a client
-- JPEG wallpapers (libjpeg), and subpixel font rendering
+- Subpixel font rendering

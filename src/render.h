@@ -77,8 +77,12 @@ void canvas_blend(struct canvas *c, int x, int y, uint32_t premul_px);
 
 /* ---------------------------------------------------------------- images (image.c) */
 
-/* Load a PNG (cached by path). NULL, with a message on stderr, if it can't be read. */
+/* Load a PNG or JPEG (cached by path). NULL if it can't be read; image_error()
+ * then says why. */
 const struct image *image_load(const char *path);
+const char *image_error(void);
+/* jpeg.c: decode a JPEG file's bytes; on failure, NULL with the reason in err */
+struct image *jpeg_decode(const uint8_t *d, size_t len, char *err, size_t errlen);
 /* A copy scaled to w x h (cached); smooth in both directions. */
 const struct image *image_scaled(const struct image *img, int w, int h);
 void image_cache_clear(void);

@@ -1267,24 +1267,51 @@ static void draw_pointer(struct canvas *c) {
 /* Problems with the theme, on screen: pane's own output is usually the console
  * hidden behind it. Deliberately not styled by the theme, so a broken theme can't
  * hide it. A click on it dismisses it until the theme changes again. */
+/* Split `text` into lines no wider than max_w, breaking after a space or '/'
+ * where possible. Returns the number of lines stored in out[]. */
+static int wrap(const struct font *f, const char *text, int max_w, char out[][256], int max_lines) {
+    int n = 0;
+    const char *s = text;
+    while (*s && n < max_lines) {
+        char line[256];
+        size_t len = strlen(s), fit = 0, brk = 0;
+        for (size_t i = 1; i <= len && i < sizeof line; i++) {   /* longest prefix that fits */
+            memcpy(line, s, i);
+            line[i] = '\0';
+            if (text_width(f, line) > max_w) break;
+            fit = i;
+            if (s[i - 1] == ' ' || s[i - 1] == '/') brk = i;
+        }
+        if (fit == 0) fit = 1;
+        size_t take = fit < len && brk > 0 ? brk : fit;
+        snprintf(out[n++], 256, "%.*s", (int)take, s);
+        s += take;
+        if (n > 1 || s != text) while (*s == ' ') s++;
+    }
+    return n;
+}
+
 static void draw_messages(struct canvas *c) {
     messages_box = (struct rect){ 0 };
     int total = css_message_count();
     if (!total || messages_hidden) return;
     const struct font *f = font_get("monospace", 400, false, 13);
     if (!f) return;
-    enum { MAX_LINES = 10 };
-    char head[96], tail[96];
-    snprintf(head, sizeof head, "Theme: %d problem%s (click here to hide)", total, total == 1 ? "" : "s");
-    const char *lines[MAX_LINES + 2];
-    int n = 0;
-    lines[n++] = head;
-    for (int i = 0; i < MAX_LINES && css_message(i); i++) lines[n++] = css_message(i);
-    if (total > n - 1) {
-        snprintf(tail, sizeof tail, "...and %d more (pane prints them all to its output)", total - (n - 1));
-        lines[n++] = tail;
+    enum { MAX_LINES = 16 };
+    static char lines[MAX_LINES + 2][256];
+    int pad = 10, max_w = srv.width - 32 - 2 * pad, n = 0, shown = 0;
+    snprintf(lines[n++], 256, "Theme: %d problem%s (click here to hide)", total, total == 1 ? "" : "s");
+    for (int i = 0; css_message(i) && n < MAX_LINES; i++, shown++) {
+        char parts[MAX_LINES][256];
+        int k = wrap(f, css_message(i), max_w, parts, MAX_LINES);
+        if (n + k > MAX_LINES && shown > 0) break;   /* keep messages whole */
+        for (int j = 0; j < k && n < MAX_LINES; j++) {
+            snprintf(lines[n++], 256, "%s%s", j ? "    " : "", parts[j]);
+        }
     }
-    int lh = font_line_height(f), pad = 10, w = 0;
+    if (total > shown)
+        snprintf(lines[n++], 256, "...and %d more (pane prints them all to its output)", total - shown);
+    int lh = font_line_height(f), w = 0;
     for (int i = 0; i < n; i++) w = MAX(w, text_width(f, lines[i]));
     w = MIN(w + 2 * pad, srv.width - 32);
     int h = n * lh + 2 * pad;
