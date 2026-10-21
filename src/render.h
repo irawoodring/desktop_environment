@@ -41,7 +41,11 @@ struct radii { float tl, tr, br, bl; };
 
 /* per-side border, CSS order: top, right, bottom, left */
 enum { TOP, RIGHT, BOTTOM, LEFT };
-struct border { int w[4]; struct color c[4]; };
+/* border-style; NONE draws nothing (and a box built in code that leaves it at 0
+ * with a width is drawn solid) */
+enum border_style { BORDER_NONE, BORDER_SOLID, BORDER_DASHED, BORDER_DOTTED, BORDER_DOUBLE,
+                    BORDER_GROOVE, BORDER_RIDGE, BORDER_INSET, BORDER_OUTSET };
+struct border { int w[4]; struct color c[4]; uint8_t style[4]; };
 
 /* Pixels are XRGB8888: 0x00RRGGBB. Drawing is clipped to `clip`. */
 struct canvas {

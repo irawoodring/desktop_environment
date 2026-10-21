@@ -236,6 +236,64 @@ static int border_side(const struct border *b, float x0, float y0, float x1, flo
     return best;
 }
 
+static float clamp01(float v) { return CLAMP(v, 0.0f, 1.0f); }
+
+static struct color shade(struct color c, float f) {
+    return (struct color){ (uint8_t)(c.r * f), (uint8_t)(c.g * f), (uint8_t)(c.b * f), c.a };
+}
+
+/* The border styles other than solid, for one pixel of one side's border.
+ * `depth` is how far the pixel is inside the box's outer edge, `along` how far
+ * along the side, whose length is `len`. Adjusts the pixel's coverage and color.
+ * (CSS leaves the exact pattern to the renderer. Like browsers, dashes and dots
+ * are spaced to fit the side, so each one starts and ends with a whole one.) */
+static void border_style_px(int style, int side, float w, float depth, float along, float len,
+                            float *cov, struct color *col) {
+    switch (style) {
+    case BORDER_DASHED: {   /* dashes about 3x the width, gaps about 2x */
+        float dash = fmaxf(3 * w, 3), gap = fmaxf(2 * w, 2);
+        float n = fmaxf(roundf((len + gap) / (dash + gap)), 1), k = (len + gap) / (n * (dash + gap));
+        dash *= k;
+        gap *= k;
+        float period = dash + gap, u = fmodf(along, period);
+        *cov *= clamp01(fmaxf(fminf(u, dash - u), u - period) + 0.5f);
+        break;
+    }
+    case BORDER_DOTTED: {   /* round dots as wide as the border, about one dot apart */
+        float d = fmaxf(w, 1);
+        float n = fmaxf(roundf((len - d) / (2 * d)), 1), period = (len - d) / n;
+        float u = fmodf(along, period);                 /* dots at 0, period, ... */
+        if (w <= 2) {       /* too small to be round: square dots */
+            *cov *= clamp01(fmaxf(fminf(u, d - u), u - period) + 0.5f);
+            break;
+        }
+        float du = fminf(fabsf(u - d / 2), fabsf(u - period - d / 2)), dv = depth - d / 2;
+        *cov = fminf(*cov, clamp01(d / 2 - sqrtf(du * du + dv * dv) + 0.5f));
+        break;
+    }
+    case BORDER_DOUBLE: {   /* two lines, each a third of the width */
+        if (w < 3) break;
+        float t = w / 3;
+        *cov *= clamp01(clamp01(t - depth + 0.5f) + clamp01(depth - (w - t) + 0.5f));
+        break;
+    }
+    case BORDER_GROOVE: case BORDER_RIDGE: case BORDER_INSET: case BORDER_OUTSET: {
+        /* lit from the top left: inset darkens the top and left sides, outset the
+         * bottom and right; groove is inset on its outer half and outset on its
+         * inner half, ridge the other way round */
+        bool top_left = side == TOP || side == LEFT;
+        bool outer_half = depth < w / 2;
+        bool dark;
+        if (style == BORDER_INSET) dark = top_left;
+        else if (style == BORDER_OUTSET) dark = !top_left;
+        else if (style == BORDER_GROOVE) dark = outer_half == top_left;
+        else dark = outer_half != top_left;
+        if (dark) *col = shade(*col, 0.5f);
+        break;
+    }
+    }
+}
+
 void draw_box(struct canvas *c, struct rect r, struct radii rad, const struct border *bp,
               const struct paint *layers, int nlayers, float opacity, const struct rect *hole) {
     int x0, y0, x1, y1;
@@ -251,6 +309,7 @@ void draw_box(struct canvas *c, struct rect r, struct radii rad, const struct bo
     for (int i = 0; i < 4; i++) {
         if (b.w[i] > 0 && b.c[i].a > 0) has_border = true;
         if (memcmp(&b.c[i], &b.c[0], sizeof b.c[0])) one_color = false;
+        if (b.style[i] > BORDER_SOLID) one_color = false;   /* needs per-side work */
     }
     bool any_width = b.w[0] || b.w[1] || b.w[2] || b.w[3];
 
@@ -273,8 +332,18 @@ void draw_box(struct canvas *c, struct rect r, struct radii rad, const struct bo
             if (outer <= 0) continue;
             float in = any_width ? rrect_coverage(ix0, iy0, ix1, iy1, irad, x, y) : outer;
             if (has_border && outer > in) {
-                int side = one_color ? 0 : border_side(&b, ox0, oy0, ox1, oy1, x + 0.5f, y + 0.5f);
-                row[x] = over(row[x], color_premul(b.c[side], (outer - in) * opacity));
+                float px = x + 0.5f, py = y + 0.5f;
+                int side = one_color ? 0 : border_side(&b, ox0, oy0, ox1, oy1, px, py);
+                float cov = outer - in;
+                struct color col = b.c[side];
+                if (b.style[side] > BORDER_SOLID) {
+                    float depth = -rrect_sdf_radii(ox0, oy0, ox1, oy1, rad, px, py);
+                    float along = side == TOP ? px - ox0 : side == RIGHT ? py - oy0
+                                : side == BOTTOM ? ox1 - px : oy1 - py;
+                    float len = side == TOP || side == BOTTOM ? ox1 - ox0 : oy1 - oy0;
+                    border_style_px(b.style[side], side, b.w[side], depth, along, len, &cov, &col);
+                }
+                if (cov > 0) row[x] = over(row[x], color_premul(col, cov * opacity));
             }
             if (in <= 0) continue;
             uint32_t kk = (uint32_t)(k * in + 0.5f);

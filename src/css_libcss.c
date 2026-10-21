@@ -398,6 +398,7 @@ int css_load_file(const char *path) {
     size_t n = fread(text, 1, len, f);
     text[n] = '\0';
     fclose(f);
+    css_messages_reset();
     css_set_base_dir(path);
     image_cache_clear();   /* pick up edited images too */
     int r = load_text(text, path);
@@ -406,7 +407,10 @@ int css_load_file(const char *path) {
     return r;
 }
 
-void css_load_string(const char *text, const char *name) { load_text(text, name); }
+void css_load_string(const char *text, const char *name) {
+    css_messages_reset();
+    load_text(text, name);
+}
 
 const char *css_engine_name(void) { return "libcss"; }
 
@@ -481,8 +485,17 @@ static void translate(const css_computed_style *cs, struct style *s) {
         css_computed_border_top_style, css_computed_border_right_style,
         css_computed_border_bottom_style, css_computed_border_left_style };
     for (int i = 0; i < 4; i++) {
-        uint8_t st = styles[i](cs);
-        s->border_drawn[i] = st != CSS_BORDER_STYLE_NONE && st != CSS_BORDER_STYLE_HIDDEN;
+        switch (styles[i](cs)) {
+        case CSS_BORDER_STYLE_SOLID:  s->border.style[i] = BORDER_SOLID; break;
+        case CSS_BORDER_STYLE_DASHED: s->border.style[i] = BORDER_DASHED; break;
+        case CSS_BORDER_STYLE_DOTTED: s->border.style[i] = BORDER_DOTTED; break;
+        case CSS_BORDER_STYLE_DOUBLE: s->border.style[i] = BORDER_DOUBLE; break;
+        case CSS_BORDER_STYLE_GROOVE: s->border.style[i] = BORDER_GROOVE; break;
+        case CSS_BORDER_STYLE_RIDGE:  s->border.style[i] = BORDER_RIDGE; break;
+        case CSS_BORDER_STYLE_INSET:  s->border.style[i] = BORDER_INSET; break;
+        case CSS_BORDER_STYLE_OUTSET: s->border.style[i] = BORDER_OUTSET; break;
+        default:                      s->border.style[i] = BORDER_NONE; break;
+        }
         if (widths[i](cs, &len, &unit) == CSS_BORDER_WIDTH_WIDTH) s->border.w[i] = MAX(to_px(cs, len, unit), 0);
         if (colors[i](cs, &c) == CSS_BORDER_COLOR_COLOR) {
             s->border.c[i] = to_color(c);

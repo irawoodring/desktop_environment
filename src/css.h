@@ -59,7 +59,6 @@ struct style {
     struct color color;
     /* borders: widths and colors per side; a side is only drawn if its style isn't none */
     struct border border;
-    bool border_drawn[4];
     bool border_color_set[4];          /* else it's currentColor */
     struct length radius[4];           /* corners: top-left, top-right, bottom-right, bottom-left */
     int padding[4], margin[4];         /* top, right, bottom, left */
@@ -101,6 +100,17 @@ void style_init(struct style *s, const struct style *parent);   /* initial + inh
 void style_finish(struct style *s);    /* resolve what depends on other properties (currentColor) */
 struct radii style_radii(const struct style *s, int w, int h);  /* resolves percentages */
 struct border style_border(const struct style *s);              /* only the sides actually drawn */
+/* Problems found in the last theme loaded (bad values, unknown properties,
+ * properties with no effect where they're used), as "file:line: message".
+ * The count includes any beyond those kept. */
+void css_messages_reset(void);
+int css_message_count(void);
+const char *css_message(int i);
+/* Draw an element's box as CSS describes it: box-shadow, then background and
+ * border, at `opacity` (its own opacity already multiplied in by the caller). */
+void style_draw_box(struct canvas *c, struct rect r, struct radii rad, const struct style *s, float opacity);
+/* true if any corner has a radius */
+bool style_has_radius(const struct style *s);
 /* the background as paint layers, bottom first (color, then gradient/image); returns how many */
 int style_layers(const struct style *s, struct paint out[2]);
 /* where theme-relative paths (url(...)) are resolved from */

@@ -61,7 +61,11 @@ void wm_init(void) {
 
 static void arrange(void);
 
+static bool messages_hidden;   /* the theme problems panel, dismissed by a click */
+static struct rect messages_box;
+
 void wm_theme_changed(void) {
+    messages_hidden = false;
     free(desktop_cache);
     desktop_cache = NULL;
     arrange();   /* the layout properties may have changed */
@@ -888,6 +892,13 @@ void wm_pointer_button(uint32_t button, bool pressed) {
     if (pressed) buttons_down++;
     else if (buttons_down > 0) buttons_down--;
 
+    if (pressed && messages_box.w && ptr_x >= messages_box.x && ptr_x < messages_box.x + messages_box.w &&
+        ptr_y >= messages_box.y && ptr_y < messages_box.y + messages_box.h) {
+        messages_hidden = true;   /* the theme problems panel: a click dismisses it */
+        wm_damage();
+        return;
+    }
+
     if (menu_is_open()) {
         menu_button(button, pressed, ptr_x, ptr_y);
         return;
@@ -1160,21 +1171,26 @@ static void draw_window(struct canvas *c, struct toplevel *t) {
             case LEFT: bar_r.tl = in.tl; bar_r.bl = in.bl; content_r.tl = content_r.bl = 0; break;
             default: bar_r.tr = in.tr; bar_r.br = in.br; content_r.tr = content_r.br = 0; break;
             }
-            struct border bb = style_border(&L.bar);
-            n = style_layers(&L.bar, layers);
-            draw_box(c, L.titlebar, bar_r, &bb, layers, n, op, NULL);
+            /* each element's opacity multiplies its parent's, as in CSS */
+            float bar_op = op * L.bar.opacity;
+            if (style_has_radius(&L.bar)) bar_r = style_radii(&L.bar, L.titlebar.w, L.titlebar.h);
+            style_draw_box(c, L.titlebar, bar_r, &L.bar, bar_op);
             for (int i = 0; i < 3; i++) {
                 if (!L.shown[i]) continue;
                 struct style *s = &L.btn[i];
                 struct rect br = L.buttons[i];
-                struct border sb = style_border(s);
-                n = style_layers(s, layers);
-                draw_box(c, br, style_radii(s, br.w, br.h), &sb, layers, n, op, NULL);
+                float bop = bar_op * s->opacity;
+                style_draw_box(c, br, style_radii(s, br.w, br.h), s, bop);
                 enum icon ic = i == BTN_IDX_CLOSE ? ICON_CLOSE : i == BTN_IDX_MINIMIZE ? ICON_MINIMIZE :
                                t->maximized ? ICON_RESTORE : ICON_MAXIMIZE;
-                draw_icon(c, br, ic, s->color, op);
+                draw_icon(c, br, ic, s->color, bop);
             }
-            draw_title(c, &L, t->title[0] ? t->title : t->app_id, op);
+            if (!L.title.hidden) {
+                float top = bar_op * L.title.opacity;
+                struct rect ta = L.title_area;
+                style_draw_box(c, ta, style_radii(&L.title, ta.w, ta.h), &L.title, top);
+                draw_title(c, &L, t->title[0] ? t->title : t->app_id, top);
+            }
         }
         d.clip = &L.content;   /* round the content's free corners to match */
         d.clip_rad = content_r;
@@ -1248,6 +1264,41 @@ static void draw_pointer(struct canvas *c) {
     draw_cursor(c, x, y, scale, st.color, outline);
 }
 
+/* Problems with the theme, on screen: pane's own output is usually the console
+ * hidden behind it. Deliberately not styled by the theme, so a broken theme can't
+ * hide it. A click on it dismisses it until the theme changes again. */
+static void draw_messages(struct canvas *c) {
+    messages_box = (struct rect){ 0 };
+    int total = css_message_count();
+    if (!total || messages_hidden) return;
+    const struct font *f = font_get("monospace", 400, false, 13);
+    if (!f) return;
+    enum { MAX_LINES = 10 };
+    char head[96], tail[96];
+    snprintf(head, sizeof head, "Theme: %d problem%s (click here to hide)", total, total == 1 ? "" : "s");
+    const char *lines[MAX_LINES + 2];
+    int n = 0;
+    lines[n++] = head;
+    for (int i = 0; i < MAX_LINES && css_message(i); i++) lines[n++] = css_message(i);
+    if (total > n - 1) {
+        snprintf(tail, sizeof tail, "...and %d more (pane prints them all to its output)", total - (n - 1));
+        lines[n++] = tail;
+    }
+    int lh = font_line_height(f), pad = 10, w = 0;
+    for (int i = 0; i < n; i++) w = MAX(w, text_width(f, lines[i]));
+    w = MIN(w + 2 * pad, srv.width - 32);
+    int h = n * lh + 2 * pad;
+    struct rect box = { 16, srv.height - h - 16, w, h };
+    struct color red = { 0xf7, 0x76, 0x8e, 255 }, text = { 0xe6, 0xe6, 0xee, 255 };
+    struct border b = { { 1, 1, 1, 1 }, { red, red, red, red }, { BORDER_SOLID, BORDER_SOLID, BORDER_SOLID, BORDER_SOLID } };
+    struct paint bg = { .kind = PAINT_COLOR, .color = { 0x1e, 0x16, 0x1c, 240 } };
+    draw_shadow(c, box, uniform(6), 16, (struct color){ 0, 0, 0, 160 }, 1, NULL);
+    draw_box(c, box, uniform(6), &b, &bg, 1, 1, NULL);
+    for (int i = 0; i < n; i++)
+        draw_text(c, f, box.x + pad, box.y + pad + i * lh, lines[i], i == 0 ? red : text, 1, w - 2 * pad, 0);
+    messages_box = box;
+}
+
 void wm_render(struct canvas *c) {
     draw_desktop(c);
     struct toplevel *t;
@@ -1257,5 +1308,6 @@ void wm_render(struct canvas *c) {
     list_for_each(p, &popups, link)
         if (p->mapped) draw_popup(c, p);
     menu_draw(c);
+    draw_messages(c);
     draw_pointer(c);
 }

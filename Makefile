@@ -27,6 +27,12 @@ FT_CFLAGS := -DPANE_FREETYPE $(shell pkg-config --cflags freetype2)
 FT_LIBS   := $(shell pkg-config --libs freetype2)
 endif
 
+# the commit, for `pane --version` (see src/version.h for tarballs)
+COMMIT := $(shell test -d .git && git rev-parse --short HEAD 2>/dev/null)
+ifneq ($(COMMIT),)
+VERSION_CFLAGS := -DPANE_COMMIT='"$(COMMIT)"'
+endif
+
 SERVER_SRC = src/main.c src/event.c src/wire.c src/core.c src/compositor.c src/xdg.c \
              src/seat.c src/wm.c src/menu.c src/anim.c src/input.c src/render.c src/image.c \
              src/font.c src/css.c src/backend_drm.c src/backend_fbdev.c src/backend_headless.c $(CSS_SRC)
@@ -40,7 +46,7 @@ build/default_theme.inc: theme.css
 
 build/pane: $(SERVER_SRC) src/*.h build/default_theme.inc build/config-$(CSS)-ft$(FREETYPE)
 	@echo "CSS engine: $(CSS), FreeType: $(FREETYPE)"
-	$(CC) $(CFLAGS) $(XKB_CFLAGS) $(CSS_CFLAGS) $(FT_CFLAGS) -o $@ $(SERVER_SRC) $(XKB_LIBS) $(CSS_LIBS) $(FT_LIBS) -lz -lm
+	$(CC) $(CFLAGS) $(XKB_CFLAGS) $(CSS_CFLAGS) $(FT_CFLAGS) $(VERSION_CFLAGS) -o $@ $(SERVER_SRC) $(XKB_LIBS) $(CSS_LIBS) $(FT_LIBS) -lz -lm
 
 # rebuild when switching options
 build/config-$(CSS)-ft$(FREETYPE):
